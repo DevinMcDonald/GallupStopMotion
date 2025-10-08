@@ -27,16 +27,17 @@ def main():
     display.open()
 
     for cmd in monitor.commands():
+        print(cmd)
         if cmd == "snap":
             _ = capture.capture()
+            display.showSnap(storage.retrieveLast())
         elif cmd == "reset":
             storage.clear()
         elif cmd == "play":
             images: list[cv2.typing.MatLike] = storage.retrieveAll()
             display.showSlideShow(images)
 
-        print(cmd)
-    display.showSlideShow(storage.retrieveAll())
+        display.close()
 
 
 if __name__ == "__main__":

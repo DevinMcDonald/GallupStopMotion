@@ -1,11 +1,4 @@
-from buttonMonitor import SerialMonitor
-
-
-def main():
-    serialMonitor = SerialMonitor()
-    for button in serialMonitor.inputs:
-        print(f"received button: {button}")
-
+from stopMotion import main
 
 if __name__ == "__main__":
     main()
