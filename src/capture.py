@@ -1,37 +1,44 @@
-import os
-
 import cv2
+
+from imageStorage import ImageStorage
 
 
 class ImageCapturer:
-    TEMP_DIR: str = "/tmp"
-    IMAGE_DIR: str = f"{TEMP_DIR}/gallupStopMotion"
 
     def __init__(self):
-        if not os.path.isdir(self.IMAGE_DIR):
-            try:
-                print(f"Creating {self.IMAGE_DIR}")
-                os.mkdir(self.IMAGE_DIR)
-            except Exception as _:
-                print(f"Failed to create {self.IMAGE_DIR}")
+        self.frame_count: int = 0
+        self.cap: cv2.VideoCapture = cv2.VideoCapture(0)
+        self.storage: ImageStorage = ImageStorage()
 
-    def capture(self):
-        print("Press Enter to capture an image, or 'q' then Enter to quit.")
-        frame_count: int = 0
-        cap = cv2.VideoCapture(0)
-        while True:
-            cmd = input()
-            if cmd.lower() == "q":
-                break
+    def capture(self) -> bool:
+        ret, frame = self.cap.read()
+        if not ret:
+            print(f"failed to capture frame {self.frame_count}")
+            return False
 
-            ret, frame = cap.read()
-            if ret:
-                filename = f"{self.IMAGE_DIR}/frame_{frame_count:03d}.png"
-                succeeded: bool = cv2.imwrite(filename, frame)
-                if not succeeded:
-                    print(f"failed to save {filename}")
-                else:
-                    print(f"Saved {filename}")
-                frame_count += 1
+        succeeded: bool = self.storage.store(frame, self.frame_count)
+        if not succeeded:
+            return False
 
-        cap.release()
+        self.frame_count += 1
+
+        return True
+
+    def __del__(self):
+        self.cap.release()
+
+
+def main():
+    capturer = ImageCapturer()
+    print("Press Enter to capture an image, or 'q' then Enter to quit.")
+    while True:
+        cmd = input()
+        if cmd.lower() == "q":
+            break
+
+        if not capturer.capture():
+            print("Capture failed. Exiting")
+
+
+if __name__ == "__main__":
+    main()

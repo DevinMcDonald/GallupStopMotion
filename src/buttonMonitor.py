@@ -5,7 +5,6 @@ import serial
 
 class InputMonitor:
     def commands(self):
-        # assert False, "Not Implemented"
         print("Called un-overwritten function")
         yield str("")
 
@@ -14,13 +13,13 @@ class InputMonitor:
 
 
 class SerialDeviceMonitor(InputMonitor):
-    # Adjust the port name to your Arduino's (e.g. "COM3" on Windows, "/dev/ttyACM0" or "/dev/ttyUSB0" on Linux/Mac)
     BUTTON_MAP: dict[str, str] = {
         "0": "snap",
         "1": "play",
         "2": "restart",
     }
 
+    # Adjust the port name to your Arduino's (e.g. "COM3" on Windows, "/dev/ttyACM0" or "/dev/ttyUSB0" on Linux/Mac)
     def __init__(self, deviceName: str, baudRate: int = 9600):
         self.deviceName: str = deviceName
         self.baudRate: int = baudRate
