@@ -15,7 +15,7 @@ def openInputMonitor() -> InputMonitor:
         monitor: InputMonitor = SerialDeviceMonitor(DEVICE, BAUD)
     except Exception as _:
         print("failed to open input device. Defaulting to Keyboard input")
-        monitor: InputMonitor = CliMonitor()
+        monitor = CliMonitor()
     return monitor
 
 
