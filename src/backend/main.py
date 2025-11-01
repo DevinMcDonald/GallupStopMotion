@@ -2,7 +2,7 @@ import json
 import subprocess
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fastapi import FastAPI, File, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,7 +42,7 @@ def health():
 # ----------------- Session helpers -----------------
 
 
-def session_dirs(session: Optional[str]):
+def session_dirs(session: str | None):
     """Return (frames_dir, videos_dir, manifest_path) for a session (or default)."""
     sname = session or "_default"
     fdir = FRAMES_ROOT / sname
@@ -53,7 +53,7 @@ def session_dirs(session: Optional[str]):
     return fdir, vdir, manifest
 
 
-def load_manifest(manifest_path: Path) -> List[Dict[str, Any]]:
+def load_manifest(manifest_path: Path) -> list[dict[str, Any]]:
     if manifest_path.exists():
         try:
             return json.loads(manifest_path.read_text())
@@ -63,13 +63,13 @@ def load_manifest(manifest_path: Path) -> List[Dict[str, Any]]:
     return []
 
 
-def save_manifest(manifest_path: Path, items: List[Dict[str, Any]]):
+def save_manifest(manifest_path: Path, items: list[dict[str, Any]]):
     tmp = manifest_path.with_suffix(".tmp")
     tmp.write_text(json.dumps(items, indent=2))
     tmp.replace(manifest_path)
 
 
-def next_index(manifest: List[Dict[str, Any]]) -> int:
+def next_index(manifest: list[dict[str, Any]]) -> int:
     return (manifest[-1]["index"] + 1) if manifest else 1
 
 
@@ -78,7 +78,7 @@ def next_index(manifest: List[Dict[str, Any]]) -> int:
 
 @app.post("/api/frames")
 async def upload_frame(
-    frame: UploadFile = File(...), session: Optional[str] = Query(default=None)
+    frame: UploadFile = File(...), session: str | None = Query(default=None)
 ):
     """
     Accept a JPEG frame and record it in a session-ordered manifest.
@@ -106,7 +106,7 @@ async def upload_frame(
 
 
 @app.delete("/api/frames/last", status_code=204)
-def delete_last(session: Optional[str] = Query(default=None)):
+def delete_last(session: str | None = Query(default=None)):
     """Remove the most recent frame (by capture order) for this session."""
     frames_dir, _, manifest_path = session_dirs(session)
     manifest = load_manifest(manifest_path)
@@ -122,7 +122,7 @@ def delete_last(session: Optional[str] = Query(default=None)):
 
 
 @app.delete("/api/frames/all")
-def delete_all(session: Optional[str] = Query(default=None)):
+def delete_all(session: str | None = Query(default=None)):
     """Delete all frames for this session."""
     frames_dir, _, manifest_path = session_dirs(session)
     deleted = 0
@@ -140,7 +140,7 @@ def delete_all(session: Optional[str] = Query(default=None)):
 
 
 @app.post("/api/video")
-def build_video(session: Optional[str] = Query(default=None)):
+def build_video(session: str | None = Query(default=None)):
     """
     Build an MP4 strictly in capture order using the session's manifest.
     Uses ffmpeg concat demuxer and repeats the last frame once so duration is preserved.
