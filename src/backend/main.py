@@ -1,15 +1,26 @@
+from __future__ import annotations
+
+import asyncio
 import json
 import subprocess
 import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Query, Response, UploadFile
+from fastapi import (
+    Body,
+    FastAPI,
+    Header,
+    Query,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 # ----------------- Config -----------------
-ORIGIN = "http://localhost:5173"  # your Vite dev origin
+ORIGIN = "http://localhost:5173"  # Vite dev origin
 PORT = 8000
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -58,12 +69,11 @@ def load_manifest(manifest_path: Path) -> list[dict[str, Any]]:
         try:
             return json.loads(manifest_path.read_text())
         except Exception:
-            # If corrupt, fall back to ordering by numeric prefix of files
             return []
     return []
 
 
-def save_manifest(manifest_path: Path, items: list[dict[str, Any]]):
+def save_manifest(manifest_path: Path, items: list[dict[str, Any]]) -> None:
     tmp = manifest_path.with_suffix(".tmp")
     tmp.write_text(json.dumps(items, indent=2))
     tmp.replace(manifest_path)
@@ -73,12 +83,15 @@ def next_index(manifest: list[dict[str, Any]]) -> int:
     return (manifest[-1]["index"] + 1) if manifest else 1
 
 
-# ----------------- Routes -----------------
+# ----------------- Core routes (ordered capture & build) -----------------
+
+from fastapi import File, UploadFile
 
 
 @app.post("/api/frames")
 async def upload_frame(
-    frame: UploadFile = File(...), session: str | None = Query(default=None)
+    frame: UploadFile = File(...),
+    session: str | None = Query(default=None),
 ):
     """
     Accept a JPEG frame and record it in a session-ordered manifest.
@@ -91,16 +104,12 @@ async def upload_frame(
     filename = f"{idx:06d}.jpg"  # ensures sort order by name too
     out = frames_dir / filename
 
-    # write file
     content = await frame.read()
     out.write_bytes(content)
 
-    # update manifest
     manifest.append({"index": idx, "file": filename})
     save_manifest(manifest_path, manifest)
 
-    # return a path that the frontend can load (served via StaticFiles)
-    # note: include session subdir in returned URL
     session_prefix = session or "_default"
     return {"id": idx, "thumbnail_url": f"/frames/{session_prefix}/{filename}"}
 
@@ -114,7 +123,7 @@ def delete_last(session: str | None = Query(default=None)):
     if not manifest:
         return Response(status_code=204)
 
-    last = manifest.pop()  # last captured
+    last = manifest.pop()
     try:
         (frames_dir / last["file"]).unlink(missing_ok=True)
     finally:
@@ -134,7 +143,6 @@ def delete_all(session: str | None = Query(default=None)):
             deleted += 1
         except:
             pass
-    # clear manifest
     save_manifest(manifest_path, [])
     return {"deleted": deleted}
 
@@ -148,9 +156,7 @@ def build_video(session: str | None = Query(default=None)):
     frames_dir, videos_dir, manifest_path = session_dirs(session)
     manifest = load_manifest(manifest_path)
 
-    # If no manifest yet (old sessions), fall back to numeric filename order
     if not manifest:
-        # gather numeric-prefix jpgs
         files = sorted([p for p in frames_dir.glob("*.jpg")], key=lambda p: p.name)
         manifest = [{"index": i + 1, "file": p.name} for i, p in enumerate(files)]
         save_manifest(manifest_path, manifest)
@@ -158,7 +164,6 @@ def build_video(session: str | None = Query(default=None)):
     if not manifest:
         return Response(status_code=400, content="No frames to build")
 
-    # Verify files exist (manifest may be stale)
     ordered_files = [
         frames_dir / item["file"]
         for item in manifest
@@ -167,18 +172,15 @@ def build_video(session: str | None = Query(default=None)):
     if not ordered_files:
         return Response(status_code=400, content="No frames to build")
 
-    # Write concat list in manifest order
     vid_name = f"{uuid.uuid4()}.mp4"
     vid_path = videos_dir / vid_name
     listfile = videos_dir / f"list_{uuid.uuid4()}.txt"
 
     with listfile.open("w") as f:
         for p in ordered_files:
-            # escape single quotes
             fpath = p.as_posix().replace("'", "'\\''")
             f.write(f"file '{fpath}'\n")
             f.write("duration 0.0333\n")  # ~30fps
-        # repeat last frame without duration per ffmpeg concat-demuxer requirement
         last_path = ordered_files[-1].as_posix().replace("'", "'\\''")
         f.write(f"file '{last_path}'\n")
 
@@ -213,3 +215,68 @@ def build_video(session: str | None = Query(default=None)):
 
     session_prefix = session or "_default"
     return {"video_url": f"/videos/{session_prefix}/{vid_name}"}
+
+
+# ----------------- Optional: physical button → browser via WebSocket -----------------
+
+SHARED_TOKEN = "super-secret-token"  # set from env in production
+
+
+class EventBus:
+    def __init__(self) -> None:
+        self.clients: set[WebSocket] = set()
+        self.lock = asyncio.Lock()
+
+    async def register(self, ws: WebSocket) -> None:
+        await ws.accept()
+        async with self.lock:
+            self.clients.add(ws)
+
+    async def unregister(self, ws: WebSocket) -> None:
+        async with self.lock:
+            self.clients.discard(ws)
+
+    async def broadcast(self, payload: dict[str, Any]) -> None:
+        data = json.dumps(payload)
+        async with self.lock:
+            dead: list[WebSocket] = []
+            for ws in self.clients:
+                try:
+                    await ws.send_text(data)
+                except Exception:
+                    dead.append(ws)
+            for ws in dead:
+                self.clients.discard(ws)
+
+
+bus = EventBus()
+
+
+@app.websocket("/ws")
+async def ws_events(ws: WebSocket):
+    await bus.register(ws)
+    try:
+        while True:
+            # keepalive; we don't require client->server messages
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await bus.unregister(ws)
+
+
+@app.post("/api/button")
+async def button_event(
+    event: dict = Body(...),
+    authorization: str | None = Header(default=None),
+):
+    # Simple bearer check so only your button daemon can post
+    if authorization != f"Bearer {SHARED_TOKEN}":
+        return Response(status_code=401, content="unauthorized")
+
+    etype = event.get("type")
+    if etype not in {"capture", "play", "reset"}:
+        return Response(status_code=400, content="bad type")
+
+    await bus.broadcast({"type": etype})
+    return {"ok": True}
