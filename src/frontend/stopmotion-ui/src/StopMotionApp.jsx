@@ -20,18 +20,19 @@ export default function StopMotionApp() {
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
   const [loadingPlayback, setLoadingPlayback] = useState(false);
   const [error, setError] = useState("");
+  const [showDevHelp, setShowDevHelp] = useState(import.meta.env.DEV); // visible only in dev
 
-  // --- Start a fresh session on load (clears previous content) ---
+  // --- Fresh session on load ---
   useEffect(() => {
     (async () => {
       try {
         await startFreshSession();
-        setThumbnails([]); // clear client-side too
+        setThumbnails([]);
       } catch {}
     })();
   }, []);
 
-  // --- Start webcam as the background ---
+  // --- Webcam background ---
   useEffect(() => {
     let active = true;
     (async () => {
@@ -60,9 +61,10 @@ export default function StopMotionApp() {
     };
   }, []);
 
-  // --- Capture a frame and upload ---
+  // --- Capture & upload ---
   const handleCapture = useCallback(async () => {
     if (!videoRef.current || !canvasRef.current) return;
+    if (isCapturing) return;
     setIsCapturing(true);
     setError("");
 
@@ -81,12 +83,10 @@ export default function StopMotionApp() {
       const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
       if (!blob) throw new Error("Failed to capture frame");
 
-      // Show local thumb immediately
       const tempId = `local-${Date.now()}`;
       const localUrl = URL.createObjectURL(blob);
       setThumbnails((prev) => [{ id: tempId, url: localUrl }, ...prev].slice(0, 30));
 
-      // Upload to backend
       const data = await uploadFrame(blob); // { id, thumbnail_url? }
       if (data?.thumbnail_url) {
         const resolved = resolveUrl(data.thumbnail_url);
@@ -100,7 +100,7 @@ export default function StopMotionApp() {
     } finally {
       setIsCapturing(false);
     }
-  }, []);
+  }, [isCapturing]);
 
   // --- Undo last frame ---
   const handleUndo = useCallback(async () => {
@@ -108,18 +108,15 @@ export default function StopMotionApp() {
     try { await deleteLastFrame(); } catch {}
   }, []);
 
-  // --- Reset all (clear current session) ---
+  // --- Reset all ---
   const handleResetAll = useCallback(async () => {
     setThumbnails([]);
-    try {
-      await startFreshSession();
-    } catch (e) {
-      setError(e.message || "Reset failed");
-    }
+    try { await startFreshSession(); } catch (e) { setError(e.message || "Reset failed"); }
   }, []);
 
-  // --- Build video and play with robust timing (no fullscreen requests) ---
+  // --- Build & play (no fullscreen API) ---
   const handlePlay = useCallback(async () => {
+    if (loadingPlayback) return;
     setLoadingPlayback(true);
     setAutoplayBlocked(false);
     setError("");
@@ -128,14 +125,10 @@ export default function StopMotionApp() {
       const { video_url } = await buildVideo();
       if (!video_url) throw new Error("No video_url returned");
 
-      // Prefer proxy (5173) when API_BASE is empty; cache-bust to avoid stale loads
       const abs = resolveUrl(video_url) + `?t=${Date.now()}`;
-
-      // Update state so React mounts the player
       setPlaybackSrc(abs);
       setIsPlaying(true);
 
-      // Wait for the <video> to mount (up to ~1s)
       for (let i = 0; i < 60 && !playbackRef.current; i++) {
         // eslint-disable-next-line no-await-in-loop
         await new Promise((r) => requestAnimationFrame(r));
@@ -143,11 +136,9 @@ export default function StopMotionApp() {
       const vid = playbackRef.current;
       if (!vid) throw new Error("Player not ready");
 
-      // Ensure source and load
       vid.src = abs;
       vid.load();
 
-      // Wait for metadata or immediate error
       await new Promise((resolve, reject) => {
         const onMeta = () => { cleanup(); resolve(); };
         const onErr = () => { cleanup(); reject(new Error("Video tag error")); };
@@ -159,7 +150,6 @@ export default function StopMotionApp() {
         vid.addEventListener("error", onErr, { once: true });
       });
 
-      // Try to autoplay; if blocked, show tap-to-play
       await vid.play().catch(() => setAutoplayBlocked(true));
     } catch (e) {
       console.error("playback failed:", e);
@@ -169,7 +159,51 @@ export default function StopMotionApp() {
     } finally {
       setLoadingPlayback(false);
     }
-  }, []);
+  }, [loadingPlayback]);
+
+  // --- Keyboard controls (dev & prod) ---
+  useEffect(() => {
+    const onKey = async (e) => {
+      if (e.repeat) return;
+      const k = e.key.toLowerCase();
+
+      // Helpful defaults
+      if (k === " " || k === "c") {        // Space or C: capture
+        e.preventDefault();
+        await handleCapture();
+        return;
+      }
+      if (k === "z" || k === "u") {        // Z or U: undo
+        e.preventDefault();
+        await handleUndo();
+        return;
+      }
+      if (k === "r") {                     // R: reset all
+        e.preventDefault();
+        await handleResetAll();
+        return;
+      }
+      if (k === "p" || k === "enter") {    // P or Enter: play
+        e.preventDefault();
+        await handlePlay();
+        return;
+      }
+      if (k === "escape") {                // Esc: stop playback
+        if (isPlaying) {
+          setIsPlaying(false);
+          setPlaybackSrc("");
+          setAutoplayBlocked(false);
+        }
+        return;
+      }
+      // toggle dev help with "?" (Shift+/) — dev only
+      if (import.meta.env.DEV && (e.key === "?" || (k === "/" && e.shiftKey))) {
+        setShowDevHelp((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [handleCapture, handleUndo, handleResetAll, handlePlay, isPlaying]);
 
   return (
     <div className="relative h-screen w-screen bg-black overflow-hidden text-white select-none">
@@ -181,49 +215,44 @@ export default function StopMotionApp() {
         className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${isPlaying ? "opacity-0" : "opacity-100"}`}
       />
 
-      {/* Build mode UI */}
+      {/* Build mode UI (no on-screen buttons) */}
       {!isPlaying && (
         <>
           <div className="absolute top-4 left-4 bg-black/60 px-3 py-1 rounded-xl text-sm backdrop-blur">
             {streamReady ? "Live" : "Starting Camera..."}
           </div>
 
-          <div className="absolute top-4 right-4 flex gap-2">
-            <button onClick={handleUndo} className="px-4 py-2 bg-white text-black rounded-xl shadow">Undo</button>
-            <button onClick={handleResetAll} className="px-4 py-2 bg-white text-black rounded-xl shadow">Reset All</button>
-            <button onClick={handlePlay} disabled={loadingPlayback} className="px-4 py-2 bg-white text-black rounded-xl shadow">
-              {loadingPlayback ? "Building..." : "Play"}
-            </button>
-          </div>
-
           {/* Film roll in lower third */}
           <div className="absolute bottom-0 w-full bg-gradient-to-t from-black/70 to-transparent p-4 flex items-end">
             <div className="flex overflow-x-auto gap-3 flex-1">
               {thumbnails.length === 0 && (
-                <div className="text-white/80 text-sm">No frames yet — press Capture to add one.</div>
+                <div className="text-white/80 text-sm">No frames yet — press <span className="font-semibold">Space</span> to capture.</div>
               )}
               {thumbnails.map((t) => (
                 <img key={t.id} src={t.url} alt="" className="h-28 object-cover rounded-lg border-4 border-black shadow" />
               ))}
             </div>
-
-            <button
-              onClick={handleCapture}
-              disabled={!streamReady || isCapturing}
-              className="ml-4 h-16 w-16 bg-white rounded-full grid place-items-center shadow"
-              title="Capture frame"
-            >
-              <div className={`h-10 w-10 rounded-full ${isCapturing ? "bg-gray-400 animate-pulse" : "bg-red-500"}`} />
-            </button>
           </div>
+        {/* Dev helper overlay (visible only in dev builds) */}
+        {import.meta.env.DEV && showDevHelp && (
+          <div className="absolute top-4 right-4 bg-black/70 text-white text-sm rounded-xl p-4 leading-6 shadow-lg backdrop-blur-md">
+            <div className="font-semibold mb-1">Dev Controls</div>
+            <div><span className="font-mono">Space</span> or <span className="font-mono">C</span> — Capture</div>
+            <div><span className="font-mono">Z</span> or <span className="font-mono">U</span> — Undo last</div>
+            <div><span className="font-mono">R</span> — Reset session</div>
+            <div><span className="font-mono">P</span> or <span className="font-mono">Enter</span> — Play</div>
+            <div><span className="font-mono">Esc</span> — Stop playback</div>
+            <div className="mt-1 opacity-80"><span className="font-mono">?</span> to hide</div>
+          </div>
+        )}
         </>
       )}
 
-      {/* Playback takeover (fills the app, no fullscreen APIs) */}
+      {/* Playback takeover (fills the app) */}
       {isPlaying && (
         <div className="absolute inset-0 bg-black">
           <video
-            key={playbackSrc}               // force remount on new src
+            key={playbackSrc}
             ref={playbackRef}
             className="absolute inset-0 h-full w-full object-contain"
             playsInline
