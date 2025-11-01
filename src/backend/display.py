@@ -1,7 +1,6 @@
 import math
 
 import cv2
-
 from imageStorage import ImageStorage
 
 

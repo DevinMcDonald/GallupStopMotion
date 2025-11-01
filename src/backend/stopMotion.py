@@ -1,7 +1,4 @@
-from re import M
-
 import cv2
-
 from buttonMonitor import CliMonitor, InputMonitor, SerialDeviceMonitor
 from capture import ImageCapturer
 from display import Display
