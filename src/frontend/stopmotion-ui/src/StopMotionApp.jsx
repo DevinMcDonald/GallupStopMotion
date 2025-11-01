@@ -1,14 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
-
-// --- Config & Helpers ---
-const API_BASE = (import.meta.env.VITE_API_BASE ?? "http://localhost:8000").replace(/\/$/, "");
-
-const resolveUrl = (u) => {
-  if (!u) return "";
-  if (/^https?:\/\//i.test(u)) return u; // already absolute
-  const path = u.startsWith("/") ? u : `/${u}`;
-  return `${API_BASE}${path}`;
-};
+import { API_BASE, resolveUrl, uploadFrame, deleteLastFrame, buildVideo } from "./lib/backend";
 
 export default function StopMotionApp() {
   const videoRef = useRef(null);
@@ -17,15 +8,15 @@ export default function StopMotionApp() {
   const playbackRef = useRef(null);
 
   const [streamReady, setStreamReady] = useState(false);
-  const [thumbnails, setThumbnails] = useState([]);
+  const [thumbnails, setThumbnails] = useState([]);  // { id, url }
   const [isCapturing, setIsCapturing] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackSrc, setPlaybackSrc] = useState("");
-  const [error, setError] = useState("");
-  const [loadingPlayback, setLoadingPlayback] = useState(false);
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
+  const [loadingPlayback, setLoadingPlayback] = useState(false);
+  const [error, setError] = useState("");
 
-  // --- Start Webcam ---
+  // --- Start webcam as the background ---
   useEffect(() => {
     let active = true;
     (async () => {
@@ -40,7 +31,7 @@ export default function StopMotionApp() {
           await videoRef.current.play();
           setStreamReady(true);
         }
-      } catch (e) {
+      } catch {
         setError("Camera access denied. Please allow webcam.");
       }
     })();
@@ -50,11 +41,11 @@ export default function StopMotionApp() {
       try {
         const s = videoRef.current?.srcObject;
         s && s.getTracks().forEach((t) => t.stop());
-      } catch (_) {}
+      } catch {}
     };
   }, []);
 
-  // --- Capture Frame ---
+  // --- Capture a frame and upload ---
   const handleCapture = useCallback(async () => {
     if (!videoRef.current || !canvasRef.current) return;
     setIsCapturing(true);
@@ -65,75 +56,97 @@ export default function StopMotionApp() {
       const canvas = canvasRef.current;
       const w = video.videoWidth;
       const h = video.videoHeight;
+      if (!w || !h) throw new Error("Video not ready");
 
       canvas.width = w;
       canvas.height = h;
       const ctx = canvas.getContext("2d");
       ctx.drawImage(video, 0, 0, w, h);
 
-      const blob = await new Promise((resolve) =>
-        canvas.toBlob(resolve, "image/jpeg", 0.9)
-      );
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
+      if (!blob) throw new Error("Failed to capture frame");
 
-      const localUrl = URL.createObjectURL(blob);
+      // Show local thumb immediately
       const tempId = `local-${Date.now()}`;
+      const localUrl = URL.createObjectURL(blob);
       setThumbnails((prev) => [{ id: tempId, url: localUrl }, ...prev].slice(0, 30));
 
-      const form = new FormData();
-      form.append("frame", blob, `${Date.now()}.jpg`);
-
-      const res = await fetch(`${API_BASE}/api/frames`, { method: "POST", body: form });
-      const data = await res.json();
-
+      // Upload to backend
+      const data = await uploadFrame(blob); // { id, thumbnail_url? }
       if (data?.thumbnail_url) {
+        const resolved = resolveUrl(data.thumbnail_url);
         setThumbnails((prev) => [
-          { id: data.id, url: resolveUrl(data.thumbnail_url) },
+          { id: data.id || tempId, url: resolved },
           ...prev.filter((t) => t.id !== tempId),
-        ]);
+        ].slice(0, 30));
       }
     } catch (e) {
-      setError("Failed to capture");
+      setError(e.message || "Capture failed");
     } finally {
       setIsCapturing(false);
     }
   }, []);
 
-  // --- Undo Last Frame ---
+  // --- Undo last frame ---
   const handleUndo = useCallback(async () => {
     setThumbnails((prev) => prev.slice(1));
-    try { await fetch(`${API_BASE}/api/frames/last`, { method: "DELETE" }); } catch (_) {}
+    try { await deleteLastFrame(); } catch {}
   }, []);
 
-  // --- Build & Play Video ---
+  // --- Build video and play fullscreen with robust timing ---
   const handlePlay = useCallback(async () => {
     setLoadingPlayback(true);
     setAutoplayBlocked(false);
     setError("");
 
     try {
+      // Enter fullscreen during user gesture (improves autoplay)
       const container = containerRef.current;
       if (container && !document.fullscreenElement) {
         await container.requestFullscreen().catch(() => {});
       }
 
-      const res = await fetch(`${API_BASE}/api/video`, { method: "POST" });
-      const { video_url } = await res.json();
+      // Ask backend to build the video
+      const { video_url } = await buildVideo();
+      if (!video_url) throw new Error("No video_url returned");
+
+      // Prefer proxy (5173) when API_BASE is empty; cache-bust to avoid stale loads
       const abs = resolveUrl(video_url) + `?t=${Date.now()}`;
 
+      // Update state so React mounts the player
       setPlaybackSrc(abs);
       setIsPlaying(true);
 
+      // Wait for the <video> to mount (up to ~1s)
+      for (let i = 0; i < 60 && !playbackRef.current; i++) {
+        // wait a frame
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((r) => requestAnimationFrame(r));
+      }
       const vid = playbackRef.current;
+      if (!vid) throw new Error("Player not ready");
+
+      // Ensure source and load
       vid.src = abs;
       vid.load();
 
-      await new Promise((r) =>
-        vid.addEventListener("loadedmetadata", r, { once: true })
-      );
+      // Wait for metadata or immediate error
+      await new Promise((resolve, reject) => {
+        const onMeta = () => { cleanup(); resolve(); };
+        const onErr = () => { cleanup(); reject(new Error("Video tag error")); };
+        function cleanup() {
+          vid.removeEventListener("loadedmetadata", onMeta);
+          vid.removeEventListener("error", onErr);
+        }
+        vid.addEventListener("loadedmetadata", onMeta, { once: true });
+        vid.addEventListener("error", onErr, { once: true });
+      });
 
+      // Try to autoplay; if blocked, show tap-to-play
       await vid.play().catch(() => setAutoplayBlocked(true));
     } catch (e) {
-      setError("Playback failed.");
+      console.error("playback failed:", e);
+      setError("Playback failed");
       setIsPlaying(false);
       setPlaybackSrc("");
       if (document.fullscreenElement) document.exitFullscreen();
@@ -142,7 +155,7 @@ export default function StopMotionApp() {
     }
   }, []);
 
-  // Exit playback when fullscreen exits
+  // Exit playback when fullscreen exits (ESC)
   useEffect(() => {
     const onFsChange = () => {
       if (!document.fullscreenElement) {
@@ -157,11 +170,15 @@ export default function StopMotionApp() {
 
   return (
     <div ref={containerRef} className="relative h-screen w-screen bg-black overflow-hidden text-white select-none">
+      {/* Live camera background */}
+      <video
+        ref={videoRef}
+        muted
+        playsInline
+        className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${isPlaying ? "opacity-0" : "opacity-100"}`}
+      />
 
-      {/* Webcam Background */}
-      <video ref={videoRef} muted playsInline className={`absolute inset-0 h-full w-full object-cover ${isPlaying ? "opacity-0" : "opacity-100"}`} />
-
-      {/* BUILD MODE UI */}
+      {/* Build mode UI */}
       {!isPlaying && (
         <>
           <div className="absolute top-4 left-4 bg-black/60 px-3 py-1 rounded-xl text-sm backdrop-blur">
@@ -175,26 +192,34 @@ export default function StopMotionApp() {
             </button>
           </div>
 
-          {/* Film Roll */}
+          {/* Film roll in lower third */}
           <div className="absolute bottom-0 w-full bg-gradient-to-t from-black/70 to-transparent p-4 flex items-end">
             <div className="flex overflow-x-auto gap-3 flex-1">
+              {thumbnails.length === 0 && (
+                <div className="text-white/80 text-sm">No frames yet — press Capture to add one.</div>
+              )}
               {thumbnails.map((t) => (
-                <img key={t.id} src={t.url} className="h-28 object-cover rounded-lg border-4 border-black shadow" />
+                <img key={t.id} src={t.url} alt="" className="h-28 object-cover rounded-lg border-4 border-black shadow" />
               ))}
             </div>
 
-            <button onClick={handleCapture} disabled={!streamReady || isCapturing}
-              className="ml-4 h-16 w-16 bg-white rounded-full grid place-items-center shadow">
+            <button
+              onClick={handleCapture}
+              disabled={!streamReady || isCapturing}
+              className="ml-4 h-16 w-16 bg-white rounded-full grid place-items-center shadow"
+              title="Capture frame"
+            >
               <div className={`h-10 w-10 rounded-full ${isCapturing ? "bg-gray-400 animate-pulse" : "bg-red-500"}`} />
             </button>
           </div>
         </>
       )}
 
-      {/* PLAYBACK MODE */}
+      {/* Playback takeover */}
       {isPlaying && (
         <div className="absolute inset-0 bg-black">
           <video
+            key={playbackSrc}               // force remount on new src
             ref={playbackRef}
             className="absolute inset-0 h-full w-full object-contain"
             playsInline
@@ -202,11 +227,26 @@ export default function StopMotionApp() {
             autoPlay
             preload="auto"
             onEnded={() => document.exitFullscreen()}
-          />
+            onError={(e) => {
+              const err = e.currentTarget?.error;
+              console.error("video error", err?.code, err?.message);
+              setError("Video playback error");
+              setIsPlaying(false);
+              setPlaybackSrc("");
+              setAutoplayBlocked(false);
+            }}
+          >
+            <source src={playbackSrc} type="video/mp4" />
+          </video>
 
           {autoplayBlocked && (
             <div className="absolute inset-0 flex items-center justify-center">
-              <button className="px-6 py-3 bg-white text-black rounded-xl" onClick={() => playbackRef.current.play()}>
+              <button
+                className="px-6 py-3 bg-white text-black rounded-xl shadow"
+                onClick={async () => {
+                  try { await playbackRef.current?.play(); setAutoplayBlocked(false); } catch {}
+                }}
+              >
                 Tap to Play
               </button>
             </div>
@@ -214,9 +254,15 @@ export default function StopMotionApp() {
         </div>
       )}
 
+      {/* Hidden canvas used for capture */}
       <canvas ref={canvasRef} className="hidden" />
 
-      {error && <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-red-600 px-4 py-2 rounded shadow">{error}</div>}
+      {/* Error toast */}
+      {error && (
+        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-red-600 px-4 py-2 rounded shadow">
+          {error}
+        </div>
+      )}
     </div>
   );
 }
