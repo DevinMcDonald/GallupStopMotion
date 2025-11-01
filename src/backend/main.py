@@ -31,6 +31,18 @@ VIDEOS_ROOT.mkdir(exist_ok=True)
 
 MANIFEST_NAME = "frames.json"  # kept inside each session's frames dir
 
+
+# ---------- Playback ramp constants (easy to tweak) ----------
+# Start at 1 frame per second so short clips are slow and clear for kids:
+RAMP_MIN_FPS: float = 1.0  # starting speed
+
+# Cap the speed so it remains readable; 12 fps is classic stop-motion smoothness:
+RAMP_MAX_FPS: float = 12.0  # upper bound
+
+# How quickly we approach the cap as frame count grows.
+# Think of this as: after ~RAMP_HALF_LIFE_FRAMES, we're ~50% of the way from MIN to MAX.
+RAMP_HALF_LIFE_FRAMES: int = 40
+
 # ----------------- App --------------------
 app = FastAPI()
 app.add_middleware(
@@ -151,11 +163,17 @@ def delete_all(session: str | None = Query(default=None)):
 def build_video(session: str | None = Query(default=None)):
     """
     Build an MP4 strictly in capture order using the session's manifest.
-    Uses ffmpeg concat demuxer and repeats the last frame once so duration is preserved.
+    Playback speed ramps automatically from a kid-friendly slow start (RAMP_MIN_FPS)
+    toward a smooth cap (RAMP_MAX_FPS) using an ease-out curve based on frame count.
+
+    We still repeat the final frame once (without 'duration') so ffmpeg preserves it.
     """
+    import math
+
     frames_dir, videos_dir, manifest_path = session_dirs(session)
     manifest = load_manifest(manifest_path)
 
+    # Fallback in case an old session has no manifest yet
     if not manifest:
         files = sorted([p for p in frames_dir.glob("*.jpg")], key=lambda p: p.name)
         manifest = [{"index": i + 1, "file": p.name} for i, p in enumerate(files)]
@@ -172,15 +190,30 @@ def build_video(session: str | None = Query(default=None)):
     if not ordered_files:
         return Response(status_code=400, content="No frames to build")
 
+    n = len(ordered_files)
+
+    # ----- Compute FPS using a gentle ease-out curve -----
+    # Ease-out exponential toward RAMP_MAX_FPS:
+    #   fps(n) = MIN + (MAX - MIN) * (1 - exp(-n / HLF))
+    # Tweak MIN, MAX, HLF at the top of the file to change behavior.
+    fps = RAMP_MIN_FPS + (RAMP_MAX_FPS - RAMP_MIN_FPS) * (
+        1.0 - math.exp(-n / float(RAMP_HALF_LIFE_FRAMES))
+    )
+    frame_sec = 1.0 / max(fps, 0.001)  # safety clamp
+
     vid_name = f"{uuid.uuid4()}.mp4"
     vid_path = videos_dir / vid_name
     listfile = videos_dir / f"list_{uuid.uuid4()}.txt"
 
+    # Write concat list with the SAME per-frame duration derived above.
+    # (If you ever want variable per-frame durations, you can replace 'frame_sec'
+    #  per line with your own sequence.)
     with listfile.open("w") as f:
         for p in ordered_files:
             fpath = p.as_posix().replace("'", "'\\''")
             f.write(f"file '{fpath}'\n")
-            f.write("duration 0.0333\n")  # ~30fps
+            f.write(f"duration {frame_sec:.6f}\n")
+        # Repeat last frame once with NO duration, per concat demuxer rules
         last_path = ordered_files[-1].as_posix().replace("'", "'\\''")
         f.write(f"file '{last_path}'\n")
 
