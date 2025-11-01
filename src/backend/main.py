@@ -79,8 +79,8 @@ def delete_last():
 def build_video():
     """
     Concatenate all frames into an mp4 and return its URL.
-    - Uses ffmpeg concat demuxer.
-    - ~30fps (0.0333s per frame).
+    Uses ffmpeg concat demuxer with duration lines.
+    IMPORTANT: Repeat the last file without a duration so the final frame is shown.
     """
     files = sorted(FRAMES_DIR.glob("*"))
     if not files:
@@ -89,19 +89,23 @@ def build_video():
     vid_name = f"{uuid.uuid4()}.mp4"
     vid_path = VIDEO_DIR / vid_name
 
+    # Write concat list with durations and repeat the last frame once (no duration)
     listfile = VIDEO_DIR / f"list_{uuid.uuid4()}.txt"
     with listfile.open("w") as f:
         for p in files:
-            # escape single quotes for safety
+            # escape single quotes just in case
             fpath = p.as_posix().replace("'", "'\\''")
             f.write(f"file '{fpath}'\n")
             f.write("duration 0.0333\n")  # ~30 fps
+        # repeat last file once without duration per ffmpeg concat-demuxer rules
+        last_path = files[-1].as_posix().replace("'", "'\\''")
+        f.write(f"file '{last_path}'\n")
 
-    # Use ffmpeg to build the video
-    # Requires: brew install ffmpeg (macOS)
     proc = subprocess.run(
         [
             "ffmpeg",
+            "-loglevel",
+            "error",
             "-y",
             "-f",
             "concat",
@@ -118,17 +122,12 @@ def build_video():
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-
     listfile.unlink(missing_ok=True)
 
     if proc.returncode != 0:
-        # surface ffmpeg error to help debugging
         return Response(
             status_code=500,
             content=f"ffmpeg failed:\n{proc.stderr.decode('utf-8', errors='ignore')[:4000]}",
         )
-
-    # Optionally clear frames after build:
-    # for p in files: p.unlink(missing_ok=True)
 
     return {"video_url": f"/videos/{vid_name}"}

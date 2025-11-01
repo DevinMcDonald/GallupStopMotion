@@ -1,3 +1,5 @@
 src/__pycache__
 *__pycache__*
 .DS_Store
+src/backend/session_frames/
+src/backend/videos/
