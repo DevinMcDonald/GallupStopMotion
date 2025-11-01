@@ -1,5 +1,11 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
-import { API_BASE, resolveUrl, uploadFrame, deleteLastFrame, buildVideo } from "./lib/backend";
+import {
+  resolveUrl,
+  uploadFrame,
+  deleteLastFrame,
+  buildVideo,
+  startFreshSession,
+} from "./lib/backend";
 
 export default function StopMotionApp() {
   const videoRef = useRef(null);
@@ -15,6 +21,45 @@ export default function StopMotionApp() {
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
   const [loadingPlayback, setLoadingPlayback] = useState(false);
   const [error, setError] = useState("");
+  const [needsFullscreen, setNeedsFullscreen] = useState(true); // prompt for FS in create mode
+
+  // --- Ensure fullscreen kiosk mode (create + playback) ---
+  const enterFullscreen = useCallback(async () => {
+    const node = containerRef.current;
+    if (!node) return;
+    try {
+      if (!document.fullscreenElement) {
+        await node.requestFullscreen();
+      }
+      setNeedsFullscreen(false);
+    } catch {
+      // Blocked by browser until user interaction. We'll keep showing the prompt.
+      setNeedsFullscreen(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Attempt on first load; many browsers require a user gesture, so the prompt will handle it.
+    enterFullscreen();
+    const onFsChange = () => setNeedsFullscreen(!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => document.removeEventListener("fullscreenchange", onFsChange);
+  }, [enterFullscreen]);
+
+  // Also re-attempt fullscreen on any main user gesture
+  const ensureFS = useCallback(async () => {
+    if (!document.fullscreenElement) await enterFullscreen();
+  }, [enterFullscreen]);
+
+  // --- Start a fresh session on load (clears previous content) ---
+  useEffect(() => {
+    (async () => {
+      try {
+        await startFreshSession();
+        setThumbnails([]); // clear client-side too
+      } catch {}
+    })();
+  }, []);
 
   // --- Start webcam as the background ---
   useEffect(() => {
@@ -47,6 +92,7 @@ export default function StopMotionApp() {
 
   // --- Capture a frame and upload ---
   const handleCapture = useCallback(async () => {
+    await ensureFS();
     if (!videoRef.current || !canvasRef.current) return;
     setIsCapturing(true);
     setError("");
@@ -85,28 +131,35 @@ export default function StopMotionApp() {
     } finally {
       setIsCapturing(false);
     }
-  }, []);
+  }, [ensureFS]);
 
   // --- Undo last frame ---
   const handleUndo = useCallback(async () => {
+    await ensureFS();
     setThumbnails((prev) => prev.slice(1));
     try { await deleteLastFrame(); } catch {}
-  }, []);
+  }, [ensureFS]);
+
+  // --- Reset all (clear current session) ---
+  const handleResetAll = useCallback(async () => {
+    await ensureFS();
+    setThumbnails([]);
+    try {
+      // reuse backend.resetAll via startFreshSession for simplicity
+      await startFreshSession();
+    } catch (e) {
+      setError(e.message || "Reset failed");
+    }
+  }, [ensureFS]);
 
   // --- Build video and play fullscreen with robust timing ---
   const handlePlay = useCallback(async () => {
+    await ensureFS();
     setLoadingPlayback(true);
     setAutoplayBlocked(false);
     setError("");
 
     try {
-      // Enter fullscreen during user gesture (improves autoplay)
-      const container = containerRef.current;
-      if (container && !document.fullscreenElement) {
-        await container.requestFullscreen().catch(() => {});
-      }
-
-      // Ask backend to build the video
       const { video_url } = await buildVideo();
       if (!video_url) throw new Error("No video_url returned");
 
@@ -119,7 +172,6 @@ export default function StopMotionApp() {
 
       // Wait for the <video> to mount (up to ~1s)
       for (let i = 0; i < 60 && !playbackRef.current; i++) {
-        // wait a frame
         // eslint-disable-next-line no-await-in-loop
         await new Promise((r) => requestAnimationFrame(r));
       }
@@ -153,7 +205,7 @@ export default function StopMotionApp() {
     } finally {
       setLoadingPlayback(false);
     }
-  }, []);
+  }, [ensureFS]);
 
   // Exit playback when fullscreen exits (ESC)
   useEffect(() => {
@@ -169,7 +221,11 @@ export default function StopMotionApp() {
   }, []);
 
   return (
-    <div ref={containerRef} className="relative h-screen w-screen bg-black overflow-hidden text-white select-none">
+    <div
+      ref={containerRef}
+      className="relative h-screen w-screen bg-black overflow-hidden text-white select-none"
+      onPointerDown={ensureFS}   // any tap/click should (re)enter fullscreen
+    >
       {/* Live camera background */}
       <video
         ref={videoRef}
@@ -177,6 +233,18 @@ export default function StopMotionApp() {
         playsInline
         className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${isPlaying ? "opacity-0" : "opacity-100"}`}
       />
+
+      {/* Fullscreen prompt (create mode) */}
+      {!isPlaying && needsFullscreen && (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <button
+            onClick={enterFullscreen}
+            className="px-6 py-3 bg-white text-black rounded-2xl shadow"
+          >
+            Tap to enter Fullscreen
+          </button>
+        </div>
+      )}
 
       {/* Build mode UI */}
       {!isPlaying && (
@@ -187,6 +255,7 @@ export default function StopMotionApp() {
 
           <div className="absolute top-4 right-4 flex gap-2">
             <button onClick={handleUndo} className="px-4 py-2 bg-white text-black rounded-xl shadow">Undo</button>
+            <button onClick={handleResetAll} className="px-4 py-2 bg-white text-black rounded-xl shadow">Reset All</button>
             <button onClick={handlePlay} disabled={loadingPlayback} className="px-4 py-2 bg-white text-black rounded-xl shadow">
               {loadingPlayback ? "Building..." : "Play"}
             </button>

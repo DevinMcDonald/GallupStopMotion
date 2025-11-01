@@ -1,36 +1,37 @@
+import json
 import subprocess
 import uuid
 from pathlib import Path
-from typing import List
+from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, File, Response, UploadFile
+from fastapi import FastAPI, File, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-# ---------- Config ----------
-ORIGIN = "http://localhost:5173"  # frontend dev server
-PORT = 8000  # backend port
+# ----------------- Config -----------------
+ORIGIN = "http://localhost:5173"  # your Vite dev origin
+PORT = 8000
 
 BASE_DIR = Path(__file__).resolve().parent
-FRAMES_DIR = BASE_DIR / "session_frames"
-VIDEO_DIR = BASE_DIR / "videos"
-FRAMES_DIR.mkdir(exist_ok=True)
-VIDEO_DIR.mkdir(exist_ok=True)
+FRAMES_ROOT = BASE_DIR / "session_frames"  # frames/<session>/
+VIDEOS_ROOT = BASE_DIR / "videos"  # videos/<session>/
+FRAMES_ROOT.mkdir(exist_ok=True)
+VIDEOS_ROOT.mkdir(exist_ok=True)
 
-# ---------- App ----------
+MANIFEST_NAME = "frames.json"  # kept inside each session's frames dir
+
+# ----------------- App --------------------
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[ORIGIN],  # tighten this in prod
+    allow_origins=[ORIGIN],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# serve saved frames & videos (for quick dev)
-app.mount("/frames", StaticFiles(directory=str(FRAMES_DIR)), name="frames")
-app.mount("/videos", StaticFiles(directory=str(VIDEO_DIR)), name="videos")
+app.mount("/frames", StaticFiles(directory=str(FRAMES_ROOT)), name="frames")
+app.mount("/videos", StaticFiles(directory=str(VIDEOS_ROOT)), name="videos")
 
 
 @app.get("/api/health")
@@ -38,67 +39,147 @@ def health():
     return {"ok": True}
 
 
-# ---------- Endpoints expected by the UI ----------
+# ----------------- Session helpers -----------------
+
+
+def session_dirs(session: Optional[str]):
+    """Return (frames_dir, videos_dir, manifest_path) for a session (or default)."""
+    sname = session or "_default"
+    fdir = FRAMES_ROOT / sname
+    vdir = VIDEOS_ROOT / sname
+    fdir.mkdir(parents=True, exist_ok=True)
+    vdir.mkdir(parents=True, exist_ok=True)
+    manifest = fdir / MANIFEST_NAME
+    return fdir, vdir, manifest
+
+
+def load_manifest(manifest_path: Path) -> List[Dict[str, Any]]:
+    if manifest_path.exists():
+        try:
+            return json.loads(manifest_path.read_text())
+        except Exception:
+            # If corrupt, fall back to ordering by numeric prefix of files
+            return []
+    return []
+
+
+def save_manifest(manifest_path: Path, items: List[Dict[str, Any]]):
+    tmp = manifest_path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(items, indent=2))
+    tmp.replace(manifest_path)
+
+
+def next_index(manifest: List[Dict[str, Any]]) -> int:
+    return (manifest[-1]["index"] + 1) if manifest else 1
+
+
+# ----------------- Routes -----------------
 
 
 @app.post("/api/frames")
-async def upload_frame(frame: UploadFile = File(...)):
+async def upload_frame(
+    frame: UploadFile = File(...), session: Optional[str] = Query(default=None)
+):
     """
-    Accepts a JPEG (multipart field name: 'frame').
-    Saves to session_frames and returns id + a URL to fetch it back if needed.
+    Accept a JPEG frame and record it in a session-ordered manifest.
+    Filenames are zero-padded by index to guarantee lexicographic order too.
     """
-    # ensure jpeg-ish content (not strictly required)
-    if not frame.filename.lower().endswith((".jpg", ".jpeg")):
-        # allow any extension, but default to .jpg
-        ext = ".jpg"
-    else:
-        ext = Path(frame.filename).suffix.lower()
+    frames_dir, _, manifest_path = session_dirs(session)
+    manifest = load_manifest(manifest_path)
 
-    fid = f"{uuid.uuid4()}{ext}"
-    out = FRAMES_DIR / fid
+    idx = next_index(manifest)
+    filename = f"{idx:06d}.jpg"  # ensures sort order by name too
+    out = frames_dir / filename
 
     # write file
     content = await frame.read()
     out.write_bytes(content)
 
-    # return a path that the frontend can load
-    return {"id": fid, "thumbnail_url": f"/frames/{fid}"}
+    # update manifest
+    manifest.append({"index": idx, "file": filename})
+    save_manifest(manifest_path, manifest)
+
+    # return a path that the frontend can load (served via StaticFiles)
+    # note: include session subdir in returned URL
+    session_prefix = session or "_default"
+    return {"id": idx, "thumbnail_url": f"/frames/{session_prefix}/{filename}"}
 
 
 @app.delete("/api/frames/last", status_code=204)
-def delete_last():
-    """
-    Removes the most recent frame (lexicographically last filename).
-    """
-    files: List[Path] = sorted(FRAMES_DIR.glob("*"))
-    if files:
-        files[-1].unlink(missing_ok=True)
+def delete_last(session: Optional[str] = Query(default=None)):
+    """Remove the most recent frame (by capture order) for this session."""
+    frames_dir, _, manifest_path = session_dirs(session)
+    manifest = load_manifest(manifest_path)
+
+    if not manifest:
+        return Response(status_code=204)
+
+    last = manifest.pop()  # last captured
+    try:
+        (frames_dir / last["file"]).unlink(missing_ok=True)
+    finally:
+        save_manifest(manifest_path, manifest)
+
+
+@app.delete("/api/frames/all")
+def delete_all(session: Optional[str] = Query(default=None)):
+    """Delete all frames for this session."""
+    frames_dir, _, manifest_path = session_dirs(session)
+    deleted = 0
+    for p in frames_dir.glob("*"):
+        if p.name == MANIFEST_NAME:
+            continue
+        try:
+            p.unlink(missing_ok=True)
+            deleted += 1
+        except:
+            pass
+    # clear manifest
+    save_manifest(manifest_path, [])
+    return {"deleted": deleted}
 
 
 @app.post("/api/video")
-def build_video():
+def build_video(session: Optional[str] = Query(default=None)):
     """
-    Concatenate all frames into an mp4 and return its URL.
-    Uses ffmpeg concat demuxer with duration lines.
-    IMPORTANT: Repeat the last file without a duration so the final frame is shown.
+    Build an MP4 strictly in capture order using the session's manifest.
+    Uses ffmpeg concat demuxer and repeats the last frame once so duration is preserved.
     """
-    files = sorted(FRAMES_DIR.glob("*"))
-    if not files:
+    frames_dir, videos_dir, manifest_path = session_dirs(session)
+    manifest = load_manifest(manifest_path)
+
+    # If no manifest yet (old sessions), fall back to numeric filename order
+    if not manifest:
+        # gather numeric-prefix jpgs
+        files = sorted([p for p in frames_dir.glob("*.jpg")], key=lambda p: p.name)
+        manifest = [{"index": i + 1, "file": p.name} for i, p in enumerate(files)]
+        save_manifest(manifest_path, manifest)
+
+    if not manifest:
         return Response(status_code=400, content="No frames to build")
 
-    vid_name = f"{uuid.uuid4()}.mp4"
-    vid_path = VIDEO_DIR / vid_name
+    # Verify files exist (manifest may be stale)
+    ordered_files = [
+        frames_dir / item["file"]
+        for item in manifest
+        if (frames_dir / item["file"]).exists()
+    ]
+    if not ordered_files:
+        return Response(status_code=400, content="No frames to build")
 
-    # Write concat list with durations and repeat the last frame once (no duration)
-    listfile = VIDEO_DIR / f"list_{uuid.uuid4()}.txt"
+    # Write concat list in manifest order
+    vid_name = f"{uuid.uuid4()}.mp4"
+    vid_path = videos_dir / vid_name
+    listfile = videos_dir / f"list_{uuid.uuid4()}.txt"
+
     with listfile.open("w") as f:
-        for p in files:
-            # escape single quotes just in case
+        for p in ordered_files:
+            # escape single quotes
             fpath = p.as_posix().replace("'", "'\\''")
             f.write(f"file '{fpath}'\n")
-            f.write("duration 0.0333\n")  # ~30 fps
-        # repeat last file once without duration per ffmpeg concat-demuxer rules
-        last_path = files[-1].as_posix().replace("'", "'\\''")
+            f.write("duration 0.0333\n")  # ~30fps
+        # repeat last frame without duration per ffmpeg concat-demuxer requirement
+        last_path = ordered_files[-1].as_posix().replace("'", "'\\''")
         f.write(f"file '{last_path}'\n")
 
     proc = subprocess.run(
@@ -130,4 +211,5 @@ def build_video():
             content=f"ffmpeg failed:\n{proc.stderr.decode('utf-8', errors='ignore')[:4000]}",
         )
 
-    return {"video_url": f"/videos/{vid_name}"}
+    session_prefix = session or "_default"
+    return {"video_url": f"/videos/{session_prefix}/{vid_name}"}
