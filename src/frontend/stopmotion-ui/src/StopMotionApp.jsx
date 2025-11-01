@@ -10,7 +10,6 @@ import {
 export default function StopMotionApp() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
-  const containerRef = useRef(null);
   const playbackRef = useRef(null);
 
   const [streamReady, setStreamReady] = useState(false);
@@ -21,35 +20,6 @@ export default function StopMotionApp() {
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
   const [loadingPlayback, setLoadingPlayback] = useState(false);
   const [error, setError] = useState("");
-  const [needsFullscreen, setNeedsFullscreen] = useState(true); // prompt for FS in create mode
-
-  // --- Ensure fullscreen kiosk mode (create + playback) ---
-  const enterFullscreen = useCallback(async () => {
-    const node = containerRef.current;
-    if (!node) return;
-    try {
-      if (!document.fullscreenElement) {
-        await node.requestFullscreen();
-      }
-      setNeedsFullscreen(false);
-    } catch {
-      // Blocked by browser until user interaction. We'll keep showing the prompt.
-      setNeedsFullscreen(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    // Attempt on first load; many browsers require a user gesture, so the prompt will handle it.
-    enterFullscreen();
-    const onFsChange = () => setNeedsFullscreen(!document.fullscreenElement);
-    document.addEventListener("fullscreenchange", onFsChange);
-    return () => document.removeEventListener("fullscreenchange", onFsChange);
-  }, [enterFullscreen]);
-
-  // Also re-attempt fullscreen on any main user gesture
-  const ensureFS = useCallback(async () => {
-    if (!document.fullscreenElement) await enterFullscreen();
-  }, [enterFullscreen]);
 
   // --- Start a fresh session on load (clears previous content) ---
   useEffect(() => {
@@ -92,7 +62,6 @@ export default function StopMotionApp() {
 
   // --- Capture a frame and upload ---
   const handleCapture = useCallback(async () => {
-    await ensureFS();
     if (!videoRef.current || !canvasRef.current) return;
     setIsCapturing(true);
     setError("");
@@ -131,30 +100,26 @@ export default function StopMotionApp() {
     } finally {
       setIsCapturing(false);
     }
-  }, [ensureFS]);
+  }, []);
 
   // --- Undo last frame ---
   const handleUndo = useCallback(async () => {
-    await ensureFS();
     setThumbnails((prev) => prev.slice(1));
     try { await deleteLastFrame(); } catch {}
-  }, [ensureFS]);
+  }, []);
 
   // --- Reset all (clear current session) ---
   const handleResetAll = useCallback(async () => {
-    await ensureFS();
     setThumbnails([]);
     try {
-      // reuse backend.resetAll via startFreshSession for simplicity
       await startFreshSession();
     } catch (e) {
       setError(e.message || "Reset failed");
     }
-  }, [ensureFS]);
+  }, []);
 
-  // --- Build video and play fullscreen with robust timing ---
+  // --- Build video and play with robust timing (no fullscreen requests) ---
   const handlePlay = useCallback(async () => {
-    await ensureFS();
     setLoadingPlayback(true);
     setAutoplayBlocked(false);
     setError("");
@@ -201,31 +166,13 @@ export default function StopMotionApp() {
       setError("Playback failed");
       setIsPlaying(false);
       setPlaybackSrc("");
-      if (document.fullscreenElement) document.exitFullscreen();
     } finally {
       setLoadingPlayback(false);
     }
-  }, [ensureFS]);
-
-  // Exit playback when fullscreen exits (ESC)
-  useEffect(() => {
-    const onFsChange = () => {
-      if (!document.fullscreenElement) {
-        setIsPlaying(false);
-        setPlaybackSrc("");
-        setAutoplayBlocked(false);
-      }
-    };
-    document.addEventListener("fullscreenchange", onFsChange);
-    return () => document.removeEventListener("fullscreenchange", onFsChange);
   }, []);
 
   return (
-    <div
-      ref={containerRef}
-      className="relative h-screen w-screen bg-black overflow-hidden text-white select-none"
-      onPointerDown={ensureFS}   // any tap/click should (re)enter fullscreen
-    >
+    <div className="relative h-screen w-screen bg-black overflow-hidden text-white select-none">
       {/* Live camera background */}
       <video
         ref={videoRef}
@@ -233,18 +180,6 @@ export default function StopMotionApp() {
         playsInline
         className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${isPlaying ? "opacity-0" : "opacity-100"}`}
       />
-
-      {/* Fullscreen prompt (create mode) */}
-      {!isPlaying && needsFullscreen && (
-        <div className="absolute inset-0 flex items-center justify-center">
-          <button
-            onClick={enterFullscreen}
-            className="px-6 py-3 bg-white text-black rounded-2xl shadow"
-          >
-            Tap to enter Fullscreen
-          </button>
-        </div>
-      )}
 
       {/* Build mode UI */}
       {!isPlaying && (
@@ -284,7 +219,7 @@ export default function StopMotionApp() {
         </>
       )}
 
-      {/* Playback takeover */}
+      {/* Playback takeover (fills the app, no fullscreen APIs) */}
       {isPlaying && (
         <div className="absolute inset-0 bg-black">
           <video
@@ -295,7 +230,11 @@ export default function StopMotionApp() {
             muted
             autoPlay
             preload="auto"
-            onEnded={() => document.exitFullscreen()}
+            onEnded={() => {
+              setIsPlaying(false);
+              setPlaybackSrc("");
+              setAutoplayBlocked(false);
+            }}
             onError={(e) => {
               const err = e.currentTarget?.error;
               console.error("video error", err?.code, err?.message);

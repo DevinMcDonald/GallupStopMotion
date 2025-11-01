@@ -16,13 +16,8 @@ export const resolveUrl = (u) => {
 };
 
 // --- Session management ---
-// We use a simple per-page-load session id. Backends that support it can bucket
-// frames by ?session=<id>. If your backend doesn’t implement sessions yet,
-// the reset endpoints below simply delete all frames in the working folder.
-export const sessionId = (() => {
-  // New session per page load to satisfy "each session clears previous one"
-  return Math.random().toString(36).slice(2);
-})();
+// New session per page load to ensure a clean slate on each kiosk session.
+export const sessionId = (() => Math.random().toString(36).slice(2))();
 
 // Helper to build a URL for an endpoint with optional session query
 const withSession = (path) => {
