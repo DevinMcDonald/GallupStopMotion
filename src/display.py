@@ -74,6 +74,7 @@ class Display:
 
     def clearText(self):
         print("")
+        cv2.namedWindow("text", cv2.WND_PROP_AUTOSIZE)
 
     def close(self):
         cv2.destroyAllWindows()
@@ -84,7 +85,7 @@ class Display:
 
 def main():
     storage: ImageStorage = ImageStorage()
-    display = Display()
+    display: Display = Display()
     display.open()
     display.print("hello world")
     display.showSlideShow(storage.retrieveAll())
