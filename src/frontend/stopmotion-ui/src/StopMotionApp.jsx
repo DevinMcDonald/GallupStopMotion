@@ -216,6 +216,8 @@ export default function StopMotionApp() {
       const BACKEND_ORIGIN =
         import.meta.env?.VITE_BACKEND_ORIGIN || window.location.origin;
       const wsUrl = BACKEND_ORIGIN.replace(/^http/, "ws") + "/ws";
+      // record attempted URL even if connection fails
+      setWsInfo((p) => ({ ...p, url: wsUrl }));
       ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
@@ -266,14 +268,20 @@ export default function StopMotionApp() {
         }
       };
 
-      ws.onclose = () => {
-        if (import.meta.env.DEV) console.log("[ws] close");
+      ws.onclose = (evt) => {
+        if (import.meta.env.DEV)
+          console.log("[ws] close", evt?.code, evt?.reason);
         clearInterval(pingTimer);
-        setWsInfo((p) => ({ ...p, connected: false }));
+        setWsInfo((p) => ({
+          ...p,
+          connected: false,
+          last: `close:${evt?.code || 1006}`,
+        }));
         if (!cancelled) setTimeout(connect, 2000); // simple reconnect
       };
 
-      ws.onerror = () => {
+      ws.onerror = (e) => {
+        setWsInfo((p) => ({ ...p, last: "error" }));
         // noop; close handler will trigger reconnect
       };
     }
