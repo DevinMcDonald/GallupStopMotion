@@ -7,7 +7,7 @@ from imageStorage import ImageStorage
 
 def openInputMonitor() -> InputMonitor:
     DEVICE: str = "/dev/tty.usbmodem1301"
-    BAUD: int = 9600
+    BAUD: int = 115200
     try:
         monitor: InputMonitor = SerialDeviceMonitor(DEVICE, BAUD)
     except Exception as _:

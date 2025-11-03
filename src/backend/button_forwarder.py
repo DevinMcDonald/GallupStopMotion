@@ -7,7 +7,7 @@ import serial
 
 BACKEND = os.getenv("BACKEND", "http://localhost:8000")
 TOKEN = os.getenv("TOKEN", "super-secret-token")
-SERIAL_PORT = os.getenv("SERIAL_PORT", "/dev/ttyACM0")  # adjust as needed
+SERIAL_PORT = os.getenv("SERIAL_PORT", "/dev/tty.usbmodem1301")  # adjust as needed
 BAUD = int(os.getenv("BAUD", "115200"))
 
 
