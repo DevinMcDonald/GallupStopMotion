@@ -1,51 +1,57 @@
 #!/usr/bin/env python3
 import os
-import time
+import sys
 
 import requests
-import serial
+from buttonMonitor import BAUD, DEVICE, SerialDeviceMonitor  # your serial reader
 
 BACKEND = os.getenv("BACKEND", "http://localhost:8000")
-TOKEN = os.getenv("TOKEN", "super-secret-token")
-SERIAL_PORT = os.getenv("SERIAL_PORT", "/dev/tty.usbmodem1301")  # adjust as needed
-BAUD = int(os.getenv("BAUD", "115200"))
+TOKEN = os.getenv("TOKEN", "super-secret-token")  # keep in sync with backend
+
+# Map whatever your device emits to backend event types (adjust the keys as needed)
+EVENT_MAP = {
+    "capture": "capture",
+    "play": "play",
+    "reset": "reset",
+    # examples of common variants
+    "CAPTURE": "capture",
+    "PLAY": "play",
+    "RESET": "reset",
+    "BTN_A": "capture",
+    "BTN_B": "play",
+    "BTN_C": "reset",
+}
 
 
-def send(evt_type: str) -> None:
+def send(evt_raw: str) -> None:
+    etype = EVENT_MAP.get(evt_raw, evt_raw).lower()
+    if etype not in {"capture", "play", "reset"}:
+        print(f"[forwarder] ignoring unknown event: {evt_raw!r} -> {etype!r}")
+        return
     try:
-        requests.post(
+        r = requests.post(
             f"{BACKEND}/api/button",
-            json={"type": evt_type},
+            json={"type": etype},
             headers={"Authorization": f"Bearer {TOKEN}"},
             timeout=2,
         )
+        if r.status_code // 100 != 2:
+            print(f"[forwarder] backend rejected {etype}: {r.status_code} {r.text}")
+        else:
+            print(f"[forwarder] sent {etype}: {r.status_code}")
     except Exception as e:
-        print("send failed:", e)
+        print("[forwarder] send failed:", e, file=sys.stderr)
 
 
 def main() -> None:
-    ser = serial.Serial(SERIAL_PORT, BAUD, timeout=0.1)
-    print("listening on", SERIAL_PORT)
-    last_sent = {"capture": 0.0, "play": 0.0, "reset": 0.0}
-    debounce = 0.25  # seconds
-    while True:
-        line = ser.readline().decode("utf-8", "ignore").strip()
-        if not line:
-            time.sleep(0.01)
-            continue
-        event = line.upper()
-        now = time.monotonic()
-        if event == "CAPTURE" and now - last_sent["capture"] > debounce:
-            send("capture")
-            last_sent["capture"] = now
-        elif event == "PLAY" and now - last_sent["play"] > debounce:
-            send("play")
-            last_sent["play"] = now
-        elif event == "RESET" and now - last_sent["reset"] > debounce:
-            send("reset")
-            last_sent["reset"] = now
-        else:
-            print("unknown:", line)
+    monitor = SerialDeviceMonitor(DEVICE, BAUD)
+    for (
+        evt
+    ) in (
+        monitor.commands()
+    ):  # assumes this yields strings like 'CAPTURE', 'BTN_A', etc.
+        print("[forwarder] read event:", evt)
+        send(evt)
 
 
 if __name__ == "__main__":

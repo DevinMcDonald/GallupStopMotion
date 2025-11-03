@@ -21,6 +21,7 @@ export default function StopMotionApp() {
   const [loadingPlayback, setLoadingPlayback] = useState(false);
   const [error, setError] = useState("");
   const [showDevHelp, setShowDevHelp] = useState(import.meta.env.DEV); // visible only in dev
+  const [wsInfo, setWsInfo] = useState({ connected: false, url: "", last: "" }); // dev-only badge
 
   // --- Fresh session on load ---
   useEffect(() => {
@@ -68,7 +69,6 @@ export default function StopMotionApp() {
 
         currentStream = stream;
         if (videoRef.current) {
-          // For iOS/Safari inline playback, ensure the element has playsInline
           videoRef.current.srcObject = stream;
           await videoRef.current.play();
           setStreamReady(true);
@@ -206,6 +206,88 @@ export default function StopMotionApp() {
     }
   }, [loadingPlayback]);
 
+  // --- WebSocket subscription to backend button events ---
+  useEffect(() => {
+    let cancelled = false;
+    let ws;
+    let pingTimer;
+
+    function connect() {
+      const BACKEND_ORIGIN =
+        import.meta.env?.VITE_BACKEND_ORIGIN || window.location.origin;
+      const wsUrl = BACKEND_ORIGIN.replace(/^http/, "ws") + "/ws";
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        if (import.meta.env.DEV) console.log("[ws] open", wsUrl);
+        setWsInfo((p) => ({ ...p, connected: true, url: wsUrl }));
+        // Optional keepalive to keep proxies/load balancers happy
+        pingTimer = setInterval(() => {
+          try {
+            ws.send("ping");
+          } catch {}
+        }, 25000);
+      };
+
+      ws.onmessage = (e) => {
+        try {
+          const raw = (e.data ?? "").toString();
+          const trimmed = raw.trim().toLowerCase();
+          const record = (t) => setWsInfo((p) => ({ ...p, last: t }));
+
+          if (trimmed === "capture") {
+            record("capture");
+            return void handleCapture();
+          }
+          if (trimmed === "play") {
+            record("play");
+            return void handlePlay();
+          }
+          if (trimmed === "reset") {
+            record("reset");
+            return void handleResetAll();
+          }
+          if (trimmed === "undo") {
+            record("undo");
+            return void handleUndo();
+          }
+
+          const msg = JSON.parse(raw);
+          const t = String(msg?.type || "").toLowerCase();
+          record(t || "unknown");
+          if (t === "capture") return void handleCapture();
+          if (t === "play") return void handlePlay();
+          if (t === "reset") return void handleResetAll();
+          if (t === "undo") return void handleUndo();
+          if (import.meta.env.DEV) console.log("[ws] ignored message", msg);
+        } catch (err) {
+          if (import.meta.env.DEV) console.warn("[ws] bad message", e.data);
+          setWsInfo((p) => ({ ...p, last: "bad-message" }));
+        }
+      };
+
+      ws.onclose = () => {
+        if (import.meta.env.DEV) console.log("[ws] close");
+        clearInterval(pingTimer);
+        setWsInfo((p) => ({ ...p, connected: false }));
+        if (!cancelled) setTimeout(connect, 2000); // simple reconnect
+      };
+
+      ws.onerror = () => {
+        // noop; close handler will trigger reconnect
+      };
+    }
+
+    connect();
+    return () => {
+      cancelled = true;
+      clearInterval(pingTimer);
+      try {
+        ws && ws.close();
+      } catch {}
+    };
+  }, [handleCapture, handlePlay, handleResetAll, handleUndo]);
+
   // --- Keyboard controls (dev & prod) ---
   useEffect(() => {
     const onKey = async (e) => {
@@ -293,28 +375,43 @@ export default function StopMotionApp() {
           </div>
           {/* Dev helper overlay (visible only in dev builds) */}
           {import.meta.env.DEV && showDevHelp && (
-            <div className="absolute top-4 right-4 bg-black/70 text-white text-sm rounded-xl p-4 leading-6 shadow-lg backdrop-blur-md">
-              <div className="font-semibold mb-1">Dev Controls</div>
-              <div>
-                <span className="font-mono">Space</span> or{" "}
-                <span className="font-mono">C</span> — Capture
+            <div className="absolute top-4 right-4 flex flex-col items-end gap-2">
+              <div className="bg-black/70 text-white text-sm rounded-xl p-4 leading-6 shadow-lg backdrop-blur-md">
+                <div className="font-semibold mb-1">Dev Controls</div>
+                <div>
+                  <span className="font-mono">Space</span> or{" "}
+                  <span className="font-mono">C</span> — Capture
+                </div>
+                <div>
+                  <span className="font-mono">Z</span> or{" "}
+                  <span className="font-mono">U</span> — Undo last
+                </div>
+                <div>
+                  <span className="font-mono">R</span> — Reset session
+                </div>
+                <div>
+                  <span className="font-mono">P</span> or{" "}
+                  <span className="font-mono">Enter</span> — Play
+                </div>
+                <div>
+                  <span className="font-mono">Esc</span> — Stop playback
+                </div>
+                <div className="mt-1 opacity-80">
+                  <span className="font-mono">?</span> to hide
+                </div>
               </div>
-              <div>
-                <span className="font-mono">Z</span> or{" "}
-                <span className="font-mono">U</span> — Undo last
-              </div>
-              <div>
-                <span className="font-mono">R</span> — Reset session
-              </div>
-              <div>
-                <span className="font-mono">P</span> or{" "}
-                <span className="font-mono">Enter</span> — Play
-              </div>
-              <div>
-                <span className="font-mono">Esc</span> — Stop playback
-              </div>
-              <div className="mt-1 opacity-80">
-                <span className="font-mono">?</span> to hide
+
+              {/* WS status badge (anchors under Dev Controls) */}
+              <div
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium backdrop-blur shadow-lg ${wsInfo.connected ? "bg-emerald-500/80 text-black" : "bg-red-500/80 text-white"}`}
+              >
+                <div className="font-semibold">
+                  WS {wsInfo.connected ? "Connected" : "Disconnected"}
+                </div>
+                <div className="opacity-90 max-w-[260px] truncate">
+                  {wsInfo.url || "—"}
+                </div>
+                <div className="opacity-90">last: {wsInfo.last || "—"}</div>
               </div>
             </div>
           )}
