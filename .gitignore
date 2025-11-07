@@ -1,5 +1,42 @@
-src/__pycache__
-*__pycache__*
-.DS_Store
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.tmp
+*.log
+*.sqlite3
+
+# Virtual environment
+.venv/
+venv/
+
+# Local config / env files
+.env
+.env.local
+.env.development
+.env.production
+
+# --- FastAPI / Application generated data ---
+# All session frames + video output
 src/backend/session_frames/
 src/backend/videos/
+
+# Temp concat lists generated for ffmpeg (just in case)
+list_*.txt
+
+# --- Node / Frontend ---
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Vite / cache
+frontend/.vite
+.vite/
+
+# --- OS / Editor noise ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

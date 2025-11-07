@@ -1,0 +1,55 @@
+services:
+  backend:
+    build: ./backend
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports: ["8000:8000"]
+    volumes:
+      - ./backend:/app:delegated   # dev hot-reload; drop in prod
+    environment:
+      ENV: dev
+      FRAMES_DIR: /data/session_frames
+    init: true
+    stop_grace_period: 20s
+    restart: "no"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  frontend:
+    build: ./frontend
+    # Vite dev server example (adjust to your frontend tooling)
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]
+    ports: ["5173:5173"]
+    volumes:
+      - ./frontend:/app:delegated
+      - /app/node_modules        # keep deps inside container
+    environment:
+      NODE_ENV: development
+    init: true
+    stop_grace_period: 10s
+    restart: "no"
+
+  # Optional, best-effort Arduino uploader (exits 0 if no device)
+  mcu:
+    build: ./microcontroller
+    # Map likely serial devices. Adjust for your host.
+    # Linux (UNO): usually /dev/ttyACM0 or /dev/ttyUSB0
+    # macOS: /dev/tty.usbmodem* (Docker Desktop supports mapping explicit paths)
+    devices:
+      - /dev/ttyACM0:/dev/ttyACM0
+      - /dev/ttyUSB0:/dev/ttyUSB0
+      - /dev/tty.usbmodem1101:/dev/tty.usbmodem1101  # update to your actual device if on macOS
+    volumes:
+      - ./microcontroller:/workspace:delegated
+    environment:
+      FQBN: arduino:avr:uno
+      # Override PORT to your actual device path if you know it; otherwise the script auto-detects.
+      PORT: ""
+      SKIP_LIBS: "0"   # set to 1 to skip lib installs each run
+      SKIP_CORE: "0"   # set to 1 to skip core install each run
+      SKETCH: /workspace/Sketch/Sketch.ino
+    init: true
+    restart: "no"
+    profiles: ["mcu"]   # only runs when you include --profile mcu
