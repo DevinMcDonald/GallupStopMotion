@@ -67,11 +67,6 @@ def health():
     return {"ok": True}
 
 
-@app.get("/api/health")
-def health():
-    return {"ok": True}
-
-
 # ----------------- Session helpers -----------------
 
 
