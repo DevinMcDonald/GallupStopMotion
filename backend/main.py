@@ -153,30 +153,47 @@ async def upload_frame(
 
 @app.delete("/api/frames/last", status_code=204)
 def delete_last(session: str | None = Query(default=None)):
-    """Remove the most recent frame (by capture order) for this session."""
+    """Undo: remove the most recent frame by capture order (manifest) or by filename if needed."""
     frames_dir, _, manifest_path = session_dirs(session)
     manifest = load_manifest(manifest_path)
 
-    if not manifest:
+    if manifest:
+        last = manifest.pop()
+        (frames_dir / last["file"]).unlink(missing_ok=True)
+        save_manifest(manifest_path, manifest)
         return Response(status_code=204)
 
-    last = manifest.pop()
-    try:
-        (frames_dir / last["file"]).unlink(missing_ok=True)
-    finally:
-        save_manifest(manifest_path, manifest)
+    # Fallback: no manifest entries, look at disk
+    jpgs = sorted(frames_dir.glob("*.jpg"), key=lambda p: p.name)
+    if not jpgs:
+        return Response(status_code=204)
+
+    # Remove the last JPG, then rebuild a fresh manifest from remaining files
+    jpgs[-1].unlink(missing_ok=True)
+    remaining = sorted(frames_dir.glob("*.jpg"), key=lambda p: p.name)
+
+    # Rebuild manifest strictly by filename order (1-based contiguous indices)
+    rebuilt = []
+    for i, p in enumerate(remaining, start=1):
+        rebuilt.append({"index": i, "file": p.name})
+    save_manifest(manifest_path, rebuilt)
+    return Response(status_code=204)
 
 
 @app.delete("/api/frames/all")
-def delete_all(session: str):
-    # Reuse your helper so paths are consistent
-    frames_dir, _, manifest_path = session_dirs(session)
+def delete_all(session: str | None = Query(default=None)):
+    """Hard reset: remove ALL frames & videos for this session and reset manifest."""
+    frames_dir, videos_dir, manifest_path = session_dirs(session)
 
-    # Remove all frames (if present)
+    # remove all artifacts
     shutil.rmtree(frames_dir, ignore_errors=True)
-    frames_dir.mkdir(parents=True, exist_ok=True)
+    shutil.rmtree(videos_dir, ignore_errors=True)
 
-    # Write empty manifest atomically
+    # recreate clean dirs
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    videos_dir.mkdir(parents=True, exist_ok=True)
+
+    # write empty manifest atomically
     save_manifest(manifest_path, [])
 
     return {"ok": True}
@@ -186,25 +203,33 @@ def delete_all(session: str):
 def build_video(session: str | None = Query(default=None)):
     """
     Build an MP4 strictly in capture order using the session's manifest.
-    Playback speed ramps automatically from a kid-friendly slow start (RAMP_MIN_FPS)
-    toward a smooth cap (RAMP_MAX_FPS) using an ease-out curve based on frame count.
+    Playback speed ramps from RAMP_MIN_FPS toward RAMP_MAX_FPS using an ease-out curve.
 
-    We still repeat the final frame once (without 'duration') so ffmpeg preserves it.
+    Overwrites the previous video for this session as 'latest.mp4'.
     """
     import math
+    import shutil
 
+    # Resolve dirs/manifest
     frames_dir, videos_dir, manifest_path = session_dirs(session)
-    manifest = load_manifest(manifest_path)
+    videos_dir.mkdir(parents=True, exist_ok=True)
 
-    # Fallback in case an old session has no manifest yet
+    # Ensure ffmpeg exists
+    ffmpeg_bin = globals().get("FFMPEG") or shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        return Response(status_code=503, content="ffmpeg not available in container")
+
+    # Load manifest; fallback to files on disk if manifest missing/empty
+    manifest = load_manifest(manifest_path)
     if not manifest:
-        files = sorted([p for p in frames_dir.glob("*.jpg")], key=lambda p: p.name)
+        files = sorted(frames_dir.glob("*.jpg"), key=lambda p: p.name)
         manifest = [{"index": i + 1, "file": p.name} for i, p in enumerate(files)]
         save_manifest(manifest_path, manifest)
 
     if not manifest:
         return Response(status_code=400, content="No frames to build")
 
+    # Ordered frames present on disk (skip any missing)
     ordered_files = [
         frames_dir / item["file"]
         for item in manifest
@@ -213,36 +238,36 @@ def build_video(session: str | None = Query(default=None)):
     if not ordered_files:
         return Response(status_code=400, content="No frames to build")
 
+    # ---- FPS via gentle ease-out curve ----
     n = len(ordered_files)
-
-    # ----- Compute FPS using a gentle ease-out curve -----
-    # Ease-out exponential toward RAMP_MAX_FPS:
-    #   fps(n) = MIN + (MAX - MIN) * (1 - exp(-n / HLF))
-    # Tweak MIN, MAX, HLF at the top of the file to change behavior.
     fps = RAMP_MIN_FPS + (RAMP_MAX_FPS - RAMP_MIN_FPS) * (
         1.0 - math.exp(-n / float(RAMP_HALF_LIFE_FRAMES))
     )
-    frame_sec = 1.0 / max(fps, 0.001)  # safety clamp
+    frame_sec = 1.0 / max(fps, 0.001)  # clamp to avoid divide-by-zero
 
-    vid_name = f"{uuid.uuid4()}.mp4"
+    # Deterministic output name; clear any old mp4s for this session
+    for old in videos_dir.glob("*.mp4"):
+        try:
+            old.unlink()
+        except Exception:
+            pass
+    vid_name = "latest.mp4"
     vid_path = videos_dir / vid_name
-    listfile = videos_dir / f"list_{uuid.uuid4()}.txt"
 
-    # Write concat list with the SAME per-frame duration derived above.
-    # (If you ever want variable per-frame durations, you can replace 'frame_sec'
-    #  per line with your own sequence.)
-    with listfile.open("w") as f:
+    # Concat list file (per-frame duration lines) + repeat last frame with no duration
+    listfile = videos_dir / f"list_{uuid.uuid4().hex}.txt"
+    with listfile.open("w", encoding="utf-8") as f:
         for p in ordered_files:
             fpath = p.as_posix().replace("'", "'\\''")
             f.write(f"file '{fpath}'\n")
             f.write(f"duration {frame_sec:.6f}\n")
-        # Repeat last frame once with NO duration, per concat demuxer rules
         last_path = ordered_files[-1].as_posix().replace("'", "'\\''")
         f.write(f"file '{last_path}'\n")
 
+    # Run ffmpeg (concat demuxer) and overwrite if exists
     proc = subprocess.run(
         [
-            FFMPEG,
+            ffmpeg_bin,
             "-loglevel",
             "error",
             "-y",
@@ -260,13 +285,20 @@ def build_video(session: str | None = Query(default=None)):
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        text=True,
     )
-    listfile.unlink(missing_ok=True)
+
+    # Always clean the temp list
+    try:
+        listfile.unlink(missing_ok=True)
+    except Exception:
+        pass
 
     if proc.returncode != 0:
+        # Bubble useful error text (first few KB) to help debug
         return Response(
             status_code=500,
-            content=f"ffmpeg failed:\n{proc.stderr.decode('utf-8', errors='ignore')[:4000]}",
+            content=f"ffmpeg failed:\n{proc.stderr[:4000]}",
         )
 
     session_prefix = session or "_default"
