@@ -4,7 +4,7 @@ services:
     command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
     ports: ["8000:8000"]
     volumes:
-      - ./backend:/app:delegated   # dev hot-reload; drop in prod
+      - ./backend:/app:delegated
     environment:
       ENV: dev
       FRAMES_DIR: /data/session_frames
@@ -19,37 +19,89 @@ services:
 
   frontend:
     build: ./frontend
-    # Vite dev server example (adjust to your frontend tooling)
     command: ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]
     ports: ["5173:5173"]
     volumes:
       - ./frontend:/app:delegated
-      - /app/node_modules        # keep deps inside container
+      - /app/node_modules
     environment:
       NODE_ENV: development
     init: true
     stop_grace_period: 10s
     restart: "no"
 
-  # Optional, best-effort Arduino uploader (exits 0 if no device)
-  mcu:
+  # ---------- macOS variants (Docker Desktop) ----------
+  # Map host device to a stable in-container name /dev/arduino
+  buttons-mac:
+    build: ./backend                     # reuse backend image
+    command: ["/usr/local/bin/monitor-entrypoint.sh"]
+    depends_on:
+      backend:
+        condition: service_healthy
+
+    # Serial-over-TCP bridge (created via: make mac)
+    environment:
+      SERIAL_PORT: "socket://host.docker.internal:7000"
+      SERIAL_BAUD: "115200"
+      BACKEND_URL: "http://backend:8000"
+
+    # IMPORTANT: No `devices:` on macOS
+    volumes:
+      - ./backend:/app:delegated         # hot-reload python on host
+
+    init: true
+    restart: "no"
+    profiles: ["mac-mcu"]
+
+  mcu-mac:
     build: ./microcontroller
-    # Map likely serial devices. Adjust for your host.
-    # Linux (UNO): usually /dev/ttyACM0 or /dev/ttyUSB0
-    # macOS: /dev/tty.usbmodem* (Docker Desktop supports mapping explicit paths)
+    environment:
+      FQBN: arduino:avr:uno
+      PORT: "/dev/arduino"
+      SKIP_LIBS: "0"
+      SKIP_CORE: "0"
+      SKETCH: /workspace/Sketch/Sketch.ino
+    devices:
+      - /dev/tty.usbmodem1201:/dev/arduino
+    volumes:
+      - ./microcontroller:/workspace:delegated
+    init: true
+    restart: "no"
+    profiles: ["mac-mcu"]
+
+  # ---------- Linux variants (VM/target boxes) ----------
+  buttons-linux:
+    build: ./backend
+    command: ["/usr/local/bin/monitor-entrypoint.sh"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      SERIAL_BAUD: "115200"
+      BACKEND_URL: "http://backend:8000"
+      SERIAL_PORT: ""   # auto-detect /dev/ttyACM* or /dev/ttyUSB* in entrypoint
     devices:
       - /dev/ttyACM0:/dev/ttyACM0
       - /dev/ttyUSB0:/dev/ttyUSB0
-      - /dev/tty.usbmodem1101:/dev/tty.usbmodem1101  # update to your actual device if on macOS
     volumes:
-      - ./microcontroller:/workspace:delegated
-    environment:
-      FQBN: arduino:avr:uno
-      # Override PORT to your actual device path if you know it; otherwise the script auto-detects.
-      PORT: ""
-      SKIP_LIBS: "0"   # set to 1 to skip lib installs each run
-      SKIP_CORE: "0"   # set to 1 to skip core install each run
-      SKETCH: /workspace/Sketch/Sketch.ino
+      - ./backend:/app:delegated
     init: true
     restart: "no"
-    profiles: ["mcu"]   # only runs when you include --profile mcu
+    profiles: ["linux-mcu"]
+
+  mcu-linux:
+    build: ./microcontroller
+    environment:
+      FQBN: arduino:avr:uno
+      PORT: ""         # uploader script can auto-detect or set explicitly
+      SKIP_LIBS: "0"
+      SKIP_CORE: "0"
+      SKETCH: /workspace/Sketch/Sketch.ino
+    devices:
+      - /dev/ttyACM0:/dev/ttyACM0
+      - /dev/ttyUSB0:/dev/ttyUSB0
+    volumes:
+      - ./microcontroller:/workspace:delegated
+    init: true
+    restart: "no"
+    profiles: ["linux-mcu"]

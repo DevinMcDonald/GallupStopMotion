@@ -21,6 +21,8 @@ venv/
 # All session frames + video output
 src/backend/session_frames/
 src/backend/videos/
+src/backend/session_frames/*
+src/backend/videos/*
 
 # Temp concat lists generated for ffmpeg (just in case)
 list_*.txt

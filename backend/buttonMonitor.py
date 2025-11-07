@@ -3,7 +3,7 @@ from zipfile import BadZipfile
 
 import serial
 
-DEVICE: str = "/dev/tty.usbmodem1301"
+DEVICE: str = "/dev/tty.usbmodem1201"
 BAUD: int = 115200
 
 
