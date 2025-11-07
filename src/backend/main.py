@@ -37,7 +37,7 @@ MANIFEST_NAME = "frames.json"  # kept inside each session's frames dir
 RAMP_MIN_FPS: float = 1.0  # starting speed
 
 # Cap the speed so it remains readable; 12 fps is classic stop-motion smoothness:
-RAMP_MAX_FPS: float = 12.0  # upper bound
+RAMP_MAX_FPS: float = 8.0  # upper bound
 
 # How quickly we approach the cap as frame count grows.
 # Think of this as: after ~RAMP_HALF_LIFE_FRAMES, we're ~50% of the way from MIN to MAX.
