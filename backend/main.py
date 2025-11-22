@@ -18,6 +18,7 @@ from fastapi import (
     Response,
     WebSocket,
     WebSocketDisconnect,
+    HTTPException,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -115,10 +116,103 @@ def next_index(manifest: list[dict[str, Any]]) -> int:
     return (manifest[-1]["index"] + 1) if manifest else 1
 
 
+def build_video_file(session: str | None) -> tuple[str, Path]:
+    """
+    Build a video for the given session and return (session_prefix, output_path).
+    Raises HTTPException for missing frames/ffmpeg failures to preserve the HTTP status.
+    """
+    import math
+
+    frames_dir, videos_dir, manifest_path = session_dirs(session)
+    videos_dir.mkdir(parents=True, exist_ok=True)
+
+    ffmpeg_bin = globals().get("FFMPEG") or shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        raise HTTPException(
+            status_code=503, detail="ffmpeg not available in container"
+        )
+
+    manifest = load_manifest(manifest_path)
+    if not manifest:
+        files = sorted(frames_dir.glob("*.jpg"), key=lambda p: p.name)
+        manifest = [{"index": i + 1, "file": p.name} for i, p in enumerate(files)]
+        save_manifest(manifest_path, manifest)
+
+    if not manifest:
+        raise HTTPException(status_code=400, detail="No frames to build")
+
+    ordered_files = [
+        frames_dir / item["file"]
+        for item in manifest
+        if (frames_dir / item["file"]).exists()
+    ]
+    if not ordered_files:
+        raise HTTPException(status_code=400, detail="No frames to build")
+
+    n = len(ordered_files)
+    fps = RAMP_MIN_FPS + (RAMP_MAX_FPS - RAMP_MIN_FPS) * (
+        1.0 - math.exp(-n / float(RAMP_HALF_LIFE_FRAMES))
+    )
+    frame_sec = 1.0 / max(fps, 0.001)
+
+    for old in videos_dir.glob("*.mp4"):
+        try:
+            old.unlink()
+        except Exception:
+            pass
+    vid_name = "latest.mp4"
+    vid_path = videos_dir / vid_name
+
+    listfile = videos_dir / f"list_{uuid.uuid4().hex}.txt"
+    with listfile.open("w", encoding="utf-8") as f:
+        for p in ordered_files:
+            fpath = p.as_posix().replace("'", "'\\''")
+            f.write(f"file '{fpath}'\n")
+            f.write(f"duration {frame_sec:.6f}\n")
+        last_path = ordered_files[-1].as_posix().replace("'", "'\\''")
+        f.write(f"file '{last_path}'\n")
+
+    proc = subprocess.run(
+        [
+            ffmpeg_bin,
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(listfile),
+            "-vsync",
+            "vfr",
+            "-pix_fmt",
+            "yuv420p",
+            str(vid_path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    try:
+        listfile.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    if proc.returncode != 0:
+        raise HTTPException(
+            status_code=500,
+            detail=f"ffmpeg failed:\n{proc.stderr[:4000]}",
+        )
+
+    session_prefix = session or "_default"
+    return session_prefix, vid_path
+
+
 # ----------------- Core routes (ordered capture & build) -----------------
 
 from fastapi import File, UploadFile
-
 
 @app.post("/api/frames")
 async def upload_frame(
@@ -202,102 +296,52 @@ def build_video(session: str | None = Query(default=None)):
 
     Overwrites the previous video for this session as 'latest.mp4'.
     """
-    import math
-    import shutil
-
-    # Resolve dirs/manifest
-    frames_dir, videos_dir, manifest_path = session_dirs(session)
-    videos_dir.mkdir(parents=True, exist_ok=True)
-
-    # Ensure ffmpeg exists
-    ffmpeg_bin = globals().get("FFMPEG") or shutil.which("ffmpeg")
-    if not ffmpeg_bin:
-        return Response(status_code=503, content="ffmpeg not available in container")
-
-    # Load manifest; fallback to files on disk if manifest missing/empty
-    manifest = load_manifest(manifest_path)
-    if not manifest:
-        files = sorted(frames_dir.glob("*.jpg"), key=lambda p: p.name)
-        manifest = [{"index": i + 1, "file": p.name} for i, p in enumerate(files)]
-        save_manifest(manifest_path, manifest)
-
-    if not manifest:
-        return Response(status_code=400, content="No frames to build")
-
-    # Ordered frames present on disk (skip any missing)
-    ordered_files = [
-        frames_dir / item["file"]
-        for item in manifest
-        if (frames_dir / item["file"]).exists()
-    ]
-    if not ordered_files:
-        return Response(status_code=400, content="No frames to build")
-
-    # ---- FPS via gentle ease-out curve ----
-    n = len(ordered_files)
-    fps = RAMP_MIN_FPS + (RAMP_MAX_FPS - RAMP_MIN_FPS) * (
-        1.0 - math.exp(-n / float(RAMP_HALF_LIFE_FRAMES))
-    )
-    frame_sec = 1.0 / max(fps, 0.001)  # clamp to avoid divide-by-zero
-
-    # Deterministic output name; clear any old mp4s for this session
-    for old in videos_dir.glob("*.mp4"):
-        try:
-            old.unlink()
-        except Exception:
-            pass
-    vid_name = "latest.mp4"
-    vid_path = videos_dir / vid_name
-
-    # Concat list file (per-frame duration lines) + repeat last frame with no duration
-    listfile = videos_dir / f"list_{uuid.uuid4().hex}.txt"
-    with listfile.open("w", encoding="utf-8") as f:
-        for p in ordered_files:
-            fpath = p.as_posix().replace("'", "'\\''")
-            f.write(f"file '{fpath}'\n")
-            f.write(f"duration {frame_sec:.6f}\n")
-        last_path = ordered_files[-1].as_posix().replace("'", "'\\''")
-        f.write(f"file '{last_path}'\n")
-
-    # Run ffmpeg (concat demuxer) and overwrite if exists
-    proc = subprocess.run(
-        [
-            ffmpeg_bin,
-            "-loglevel",
-            "error",
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            str(listfile),
-            "-vsync",
-            "vfr",
-            "-pix_fmt",
-            "yuv420p",
-            str(vid_path),
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-
-    # Always clean the temp list
     try:
-        listfile.unlink(missing_ok=True)
-    except Exception:
-        pass
+        session_prefix, vid_path = build_video_file(session)
+    except HTTPException as exc:
+        return Response(status_code=exc.status_code, content=str(exc.detail))
 
-    if proc.returncode != 0:
-        # Bubble useful error text (first few KB) to help debug
-        return Response(
-            status_code=500,
-            content=f"ffmpeg failed:\n{proc.stderr[:4000]}",
+    return {"video_url": f"/videos/{session_prefix}/{vid_path.name}"}
+
+
+@app.post("/api/session/share")
+def share_session_video(session: str | None = Query(default=None)):
+    """
+    Build the current session's video (if possible) and upload it to the R2 share bucket.
+    Always returns a 200-style payload describing whether anything was shared so callers
+    can safely fire-and-forget during tab closes or restarts.
+    """
+    summary: dict[str, Any] = {
+        "session": session or "_default",
+        "shared": False,
+        "share": None,
+        "video_url": None,
+    }
+
+    try:
+        session_prefix, vid_path = build_video_file(session)
+        summary["video_url"] = f"/videos/{session_prefix}/{vid_path.name}"
+    except HTTPException as exc:
+        summary["reason"] = str(exc.detail)
+        summary["status"] = exc.status_code
+        return summary
+
+    try:
+        from r2_share import create_share
+    except Exception as exc:
+        summary["reason"] = f"R2 not configured: {exc}"
+        return summary
+
+    try:
+        summary["share"] = create_share(
+            vid_path.read_bytes(),
+            content_type="video/mp4",
         )
+        summary["shared"] = True
+    except Exception as exc:
+        summary["reason"] = f"upload failed: {exc}"
 
-    session_prefix = session or "_default"
-    return {"video_url": f"/videos/{session_prefix}/{vid_name}"}
+    return summary
 
 
 # ----------------- Optional: physical button → browser via WebSocket -----------------

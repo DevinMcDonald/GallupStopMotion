@@ -16,40 +16,72 @@ export const resolveUrl = (u) => {
 };
 
 // --- Session management ---
-// New session per page load to ensure a clean slate on each kiosk session.
-export const sessionId = (() => Math.random().toString(36).slice(2))();
+const SESSION_STORAGE_KEY = "gsm-active-session";
+const makeSessionId = () => Math.random().toString(36).slice(2);
+
+let sessionId = makeSessionId();
+let previousSessionId = null;
+
+if (typeof window !== "undefined") {
+  try {
+    previousSessionId = window.localStorage.getItem(SESSION_STORAGE_KEY);
+  } catch {
+    previousSessionId = null;
+  }
+  sessionId = makeSessionId();
+  try {
+    window.localStorage.setItem(SESSION_STORAGE_KEY, sessionId);
+  } catch {}
+}
+
+export const getSessionId = () => sessionId;
+export const getPreviousSessionId = () => previousSessionId;
+
+export function rotateSessionId() {
+  previousSessionId = sessionId;
+  sessionId = makeSessionId();
+  try {
+    window.localStorage.setItem(SESSION_STORAGE_KEY, sessionId);
+  } catch {}
+  return sessionId;
+}
 
 // Helper to build a URL for an endpoint with optional session query
-const withSession = (path) => {
+const withSession = (path, sid = sessionId) => {
   const url = `${API_BASE || ""}${path}`;
   const sep = url.includes("?") ? "&" : "?";
-  return `${url}${sep}session=${encodeURIComponent(sessionId)}`;
+  return `${url}${sep}session=${encodeURIComponent(sid)}`;
 };
 
 // --- API calls ---
 
-export async function uploadFrame(blob) {
+export async function uploadFrame(blob, sid = sessionId) {
   const form = new FormData();
   form.append("frame", blob, `${Date.now()}.jpg`);
-  const res = await fetch(withSession("/api/frames"), { method: "POST", body: form });
+  const res = await fetch(withSession("/api/frames", sid), {
+    method: "POST",
+    body: form,
+  });
   if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
   return res.json(); // { id, thumbnail_url? }
 }
 
-export async function deleteLastFrame() {
-  await fetch(withSession("/api/frames/last"), { method: "DELETE" });
+export async function deleteLastFrame(sid = sessionId) {
+  await fetch(withSession("/api/frames/last", sid), { method: "DELETE" });
 }
 
-export async function buildVideo() {
-  const res = await fetch(withSession("/api/video"), { method: "POST" });
+export async function buildVideo(sid = sessionId) {
+  const res = await fetch(withSession("/api/video", sid), { method: "POST" });
   if (!res.ok) throw new Error("Video build failed");
   return res.json(); // { video_url }
 }
 
 // Clears all frames for this session (preferred) or global (fallback).
-export async function resetAll() {
+export async function resetAll(targetSessionId = sessionId) {
   // Preferred (session-aware) endpoint:
-  let res = await fetch(withSession("/api/frames/all"), { method: "DELETE" });
+  let res = await fetch(withSession("/api/frames/all", targetSessionId), {
+    method: "DELETE",
+  });
   if (res.status === 404) {
     // Fallback: some backends might expose a global reset without session param
     res = await fetch(`${API_BASE || ""}/api/frames/all`, { method: "DELETE" });
@@ -60,10 +92,50 @@ export async function resetAll() {
 }
 
 // Called on app start to ensure a clean slate for each kiosk session
-export async function startFreshSession() {
+export async function startFreshSession(targetSessionId = sessionId) {
   try {
-    await resetAll();
+    await resetAll(targetSessionId);
   } catch {
     // If the endpoint doesn’t exist yet, ignore for now (UI will still work)
   }
+}
+
+// Build + upload the current (or provided) session to R2.
+export async function finalizeShare(targetSessionId = sessionId) {
+  const res = await fetch(withSession("/api/session/share", targetSessionId), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    keepalive: true,
+  });
+  if (!res.ok) throw new Error(`Share failed: ${res.status}`);
+  return res.json();
+}
+
+// Fire-and-forget share for unload/navigation. Falls back to fetch keepalive when needed.
+export function finalizeShareBeacon(targetSessionId = sessionId) {
+  const payload = JSON.stringify({ reason: "unload", ts: Date.now() });
+  const url = withSession("/api/session/share", targetSessionId);
+
+  if (typeof navigator !== "undefined" && navigator.sendBeacon) {
+    try {
+      return navigator.sendBeacon(
+        url,
+        new Blob([payload], { type: "application/json" }),
+      );
+    } catch {
+      // fall through to fetch
+    }
+  }
+
+  try {
+    fetch(url, {
+      method: "POST",
+      body: payload,
+      headers: { "Content-Type": "application/json" },
+      keepalive: true,
+    }).catch(() => {});
+  } catch {
+    // ignore
+  }
+  return false;
 }

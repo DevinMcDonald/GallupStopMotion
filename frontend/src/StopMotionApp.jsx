@@ -5,6 +5,10 @@ import {
   deleteLastFrame,
   buildVideo,
   startFreshSession,
+  finalizeShare,
+  finalizeShareBeacon,
+  getPreviousSessionId,
+  rotateSessionId,
 } from "./lib/backend";
 
 export default function StopMotionApp() {
@@ -25,12 +29,33 @@ export default function StopMotionApp() {
 
   // --- Fresh session on load ---
   useEffect(() => {
+    let cancelled = false;
     (async () => {
+      const prevSession = getPreviousSessionId();
+      if (prevSession) {
+        try {
+          await finalizeShare(prevSession);
+        } catch (err) {
+          console.warn("share from previous session failed", err);
+        }
+        try {
+          await startFreshSession(prevSession);
+        } catch {
+          // ignore cleanup errors for previous session
+        }
+      }
+
+      if (cancelled) return;
       try {
         await startFreshSession();
         setThumbnails([]);
-      } catch {}
+      } catch {
+        // ignore reset errors here; UI will show failures on demand
+      }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // --- Webcam background ---
@@ -145,7 +170,21 @@ export default function StopMotionApp() {
 
   // --- Reset all ---
   const handleResetAll = useCallback(async () => {
+    setIsPlaying(false);
+    setPlaybackSrc("");
+    setAutoplayBlocked(false);
     setThumbnails([]);
+    try {
+      await finalizeShare();
+    } catch (e) {
+      console.warn("share on reset failed", e);
+    }
+    try {
+      await startFreshSession(); // clean up the closing session before rotating
+    } catch (e) {
+      console.warn("cleanup reset failed", e);
+    }
+    rotateSessionId();
     try {
       await startFreshSession();
     } catch (e) {
@@ -295,6 +334,23 @@ export default function StopMotionApp() {
       } catch {}
     };
   }, [handleCapture, handlePlay, handleResetAll, handleUndo]);
+
+  // --- Share on tab close/reload ---
+  useEffect(() => {
+    const onClose = () => {
+      try {
+        finalizeShareBeacon();
+      } catch {
+        // ignore unload errors
+      }
+    };
+    window.addEventListener("pagehide", onClose);
+    window.addEventListener("beforeunload", onClose);
+    return () => {
+      window.removeEventListener("pagehide", onClose);
+      window.removeEventListener("beforeunload", onClose);
+    };
+  }, []);
 
   // --- Keyboard controls (dev & prod) ---
   useEffect(() => {

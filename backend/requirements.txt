@@ -9,3 +9,6 @@ aiofiles==23.2.1
 requests==2.32.3
 pyserial==3.5
 
+# for the r2 share
+boto3==1.40.71
+python-dotenv
