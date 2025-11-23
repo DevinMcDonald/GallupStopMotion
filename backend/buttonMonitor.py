@@ -1,10 +1,60 @@
+import os
+import sys
+from glob import glob
 from typing import override
-from zipfile import BadZipfile
 
 import serial
 
-DEVICE: str = "/dev/tty.usbmodem1201"
 BAUD: int = 115200
+
+
+def guess_serial_device() -> str | None:
+    """
+    Best-effort device discovery for USB CDC serial adapters.
+
+    - macOS: prefers /dev/tty.usbmodem* (typical Arduino), falls back to usbserial/cu variants.
+    - Linux: checks /dev/ttyACM* then /dev/ttyUSB*.
+    Returns the first match (sorted) or None if nothing found.
+    """
+    platform = sys.platform
+    patterns: list[str] = []
+
+    if platform.startswith("darwin"):
+        patterns = [
+            "/dev/tty.usbmodem*",
+            "/dev/tty.usbserial*",
+            "/dev/cu.usbmodem*",
+            "/dev/cu.usbserial*",
+        ]
+    else:  # assume Linux/other POSIX
+        patterns = [
+            "/dev/ttyACM*",
+            "/dev/ttyUSB*",
+        ]
+
+    for pat in patterns:
+        matches = sorted(glob(pat))
+        if matches:
+            return matches[0]
+    return None
+
+
+def resolve_device() -> str | None:
+    """
+    Resolve the serial device path via env override or autodetect.
+    Returns None when nothing is found so callers can fallback gracefully.
+    """
+    env_device = os.getenv("INPUT_DEVICE")
+    if env_device:
+        return env_device
+
+    detected = guess_serial_device()
+    if detected:
+        return detected
+    return None
+
+
+DEVICE: str | None = resolve_device()
 
 
 class InputMonitor:
@@ -25,14 +75,20 @@ class SerialDeviceMonitor(InputMonitor):
     BUTTONS: set[str] = {"play", "capture", "reset", "undo", "save"}
 
     # Adjust the port name to your Arduino's (e.g. "COM3" on Windows, "/dev/ttyACM0" or "/dev/ttyUSB0" on Linux/Mac)
-    def __init__(self, deviceName: str, baudRate: int = 115200):
-        print(f"Starting {deviceName} at baud {baudRate}...")
-        self.deviceName: str = deviceName
+    def __init__(self, deviceName: str | None = None, baudRate: int = 115200):
+        self.deviceName: str | None = deviceName or resolve_device()
         self.baudRate: int = baudRate
+        if not self.deviceName:
+            raise RuntimeError(
+                "No serial device found (usbmodem/usbserial/ttyACM/ttyUSB). "
+                "Set INPUT_DEVICE to override."
+            )
+
+        print(f"Starting {self.deviceName} at baud {baudRate}...")
         self.serial: serial.Serial = serial.Serial(self.deviceName, self.baudRate)
         self._stop: bool = False
 
-        print(f"Successfully started {deviceName} at baud {baudRate}")
+        print(f"Successfully started {self.deviceName} at baud {baudRate}")
 
     def _serialInputs(self):
         while not self._stop:
