@@ -142,3 +142,9 @@ export function finalizeShareBeacon(targetSessionId = sessionId) {
   }
   return false;
 }
+
+export async function getSerialStatus() {
+  const res = await fetch(`${API_BASE || ""}/api/serial/status`);
+  if (!res.ok) throw new Error(`Serial status failed: ${res.status}`);
+  return res.json(); // { connected, device }
+}

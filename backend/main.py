@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import tempfile
 import uuid
+import sys
+from glob import glob
 from pathlib import Path
 from typing import Any
 
@@ -114,6 +116,34 @@ def save_manifest(manifest_path: Path, data) -> None:
 
 def next_index(manifest: list[dict[str, Any]]) -> int:
     return (manifest[-1]["index"] + 1) if manifest else 1
+
+
+def detect_serial_device() -> str | None:
+    """Best-effort serial device detection for dev convenience."""
+    env_device = os.getenv("INPUT_DEVICE")
+    if env_device and Path(env_device).exists():
+        return env_device
+
+    platform = sys.platform
+    patterns: list[str] = []
+    if platform.startswith("darwin"):
+        patterns = [
+            "/dev/tty.usbmodem*",
+            "/dev/tty.usbserial*",
+            "/dev/cu.usbmodem*",
+            "/dev/cu.usbserial*",
+        ]
+    else:  # assume Linux/other POSIX
+        patterns = [
+            "/dev/ttyACM*",
+            "/dev/ttyUSB*",
+        ]
+
+    for pat in patterns:
+        matches = sorted(glob(pat))
+        if matches:
+            return matches[0]
+    return None
 
 
 def build_video_file(session: str | None) -> tuple[str, Path]:
@@ -349,6 +379,16 @@ def share_session_video(session: str | None = Query(default=None)):
         print(f"[share] upload failed: {summary['reason']}")
 
     return summary
+
+
+@app.get("/api/serial/status")
+def serial_status():
+    """
+    Dev helper: report whether a serial input device was auto-detected.
+    Does not open the device; only checks presence of expected paths or INPUT_DEVICE env.
+    """
+    dev = detect_serial_device()
+    return {"connected": bool(dev), "device": dev}
 
 
 # ----------------- Optional: physical button → browser via WebSocket -----------------

@@ -9,6 +9,7 @@ import {
   finalizeShareBeacon,
   getPreviousSessionId,
   rotateSessionId,
+  getSerialStatus,
 } from "./lib/backend";
 
 export default function StopMotionApp() {
@@ -24,6 +25,9 @@ export default function StopMotionApp() {
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
   const [loadingPlayback, setLoadingPlayback] = useState(false);
   const [error, setError] = useState("");
+  const [serialMissing, setSerialMissing] = useState(false);
+  const [pendingResetConfirm, setPendingResetConfirm] = useState(false);
+  const [shareOverlay, setShareOverlay] = useState(null); // { url, expiresAt, key }
   const [showDevHelp, setShowDevHelp] = useState(import.meta.env.DEV); // visible only in dev
   const [wsInfo, setWsInfo] = useState({ connected: false, url: "", last: "" }); // dev-only badge
 
@@ -115,6 +119,8 @@ export default function StopMotionApp() {
 
   // --- Capture & upload ---
   const handleCapture = useCallback(async () => {
+    if (shareOverlay) return; // dismiss first
+    if (pendingResetConfirm) setPendingResetConfirm(false);
     if (!videoRef.current || !canvasRef.current) return;
     if (isCapturing) return;
     setIsCapturing(true);
@@ -162,22 +168,49 @@ export default function StopMotionApp() {
 
   // --- Undo last frame ---
   const handleUndo = useCallback(async () => {
+    if (shareOverlay) return;
+    if (pendingResetConfirm) setPendingResetConfirm(false);
     setThumbnails((prev) => prev.slice(1));
     try {
       await deleteLastFrame();
     } catch {}
-  }, []);
+  }, [shareOverlay, pendingResetConfirm]);
 
   // --- Reset all ---
   const handleResetAll = useCallback(async () => {
+    if (shareOverlay) {
+      setShareOverlay(null);
+      setPendingResetConfirm(false);
+      setError("");
+      return;
+    }
+    if (!pendingResetConfirm) {
+      setPendingResetConfirm(true);
+      setError("Press reset again to share and start a new session.");
+      return;
+    }
+
+    setPendingResetConfirm(false);
     setIsPlaying(false);
     setPlaybackSrc("");
     setAutoplayBlocked(false);
     setThumbnails([]);
     try {
-      await finalizeShare();
+      const resp = await finalizeShare();
+      const shareUrl = resp?.share?.url || resp?.url;
+      if (!shareUrl) {
+        setError("Share failed (no URL returned)");
+      } else {
+        setError("");
+        setShareOverlay({
+          url: shareUrl,
+          expiresAt: resp?.share?.expiresAt || resp?.expiresAt,
+          key: resp?.share?.key || resp?.key,
+        });
+      }
     } catch (e) {
       console.warn("share on reset failed", e);
+      setError(e.message || "Share failed");
     }
     try {
       await startFreshSession(); // clean up the closing session before rotating
@@ -190,10 +223,17 @@ export default function StopMotionApp() {
     } catch (e) {
       setError(e.message || "Reset failed");
     }
-  }, []);
+  }, [pendingResetConfirm, shareOverlay]);
 
   // --- Build & play (no fullscreen API) ---
   const handlePlay = useCallback(async () => {
+    if (shareOverlay) {
+      setShareOverlay(null);
+      setPendingResetConfirm(false);
+      setError("");
+      return;
+    }
+    if (pendingResetConfirm) setPendingResetConfirm(false);
     if (loadingPlayback) return;
     setLoadingPlayback(true);
     setAutoplayBlocked(false);
@@ -335,6 +375,25 @@ export default function StopMotionApp() {
     };
   }, [handleCapture, handlePlay, handleResetAll, handleUndo]);
 
+  // --- Serial detection (dev helper) ---
+  useEffect(() => {
+    let stopped = false;
+    const check = async () => {
+      try {
+        const status = await getSerialStatus();
+        if (!stopped) setSerialMissing(!status?.connected);
+      } catch {
+        if (!stopped) setSerialMissing(true);
+      }
+    };
+    check();
+    const id = setInterval(check, 10000);
+    return () => {
+      stopped = true;
+      clearInterval(id);
+    };
+  }, []);
+
   // --- Share on tab close/reload ---
   useEffect(() => {
     const onClose = () => {
@@ -346,21 +405,26 @@ export default function StopMotionApp() {
     };
     window.addEventListener("pagehide", onClose);
     window.addEventListener("beforeunload", onClose);
-    window.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "hidden") {
-        onClose();
-      }
-    });
+    const onVis = () => {
+      if (document.visibilityState === "hidden") onClose();
+    };
+    window.addEventListener("visibilitychange", onVis);
     return () => {
       window.removeEventListener("pagehide", onClose);
       window.removeEventListener("beforeunload", onClose);
-      window.removeEventListener("visibilitychange", onClose);
+      window.removeEventListener("visibilitychange", onVis);
     };
   }, []);
 
   // --- Keyboard controls (dev & prod) ---
   useEffect(() => {
     const onKey = async (e) => {
+      if (shareOverlay) {
+        setShareOverlay(null);
+        setPendingResetConfirm(false);
+        setError("");
+        return;
+      }
       if (e.repeat) return;
       const k = e.key.toLowerCase();
 
@@ -405,10 +469,38 @@ export default function StopMotionApp() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [handleCapture, handleUndo, handleResetAll, handlePlay, isPlaying]);
+  }, [handleCapture, handleUndo, handleResetAll, handlePlay, isPlaying, shareOverlay]);
 
   return (
     <div className="relative h-screen w-screen bg-black overflow-hidden text-white select-none">
+      {shareOverlay && (
+        <div
+          className="absolute inset-0 z-50 bg-black flex flex-col items-center justify-center gap-6 px-4 text-center"
+          onClick={() => {
+            setShareOverlay(null);
+            setPendingResetConfirm(false);
+            setError("");
+          }}
+        >
+          <div className="space-y-2">
+            <div className="text-3xl font-bold">Download your video</div>
+            <div className="text-sm text-white/80">
+              Scan the code to download. Press any button to continue.
+            </div>
+          </div>
+          <div className="bg-white p-4 rounded-2xl shadow-2xl">
+            <img
+              src={`https://api.qrserver.com/v1/create-qr-code/?size=900x900&data=${encodeURIComponent(shareOverlay.url)}`}
+              alt="QR code for shared video"
+              className="w-[80vw] max-w-[680px] max-h-[80vh] object-contain"
+            />
+          </div>
+          <div className="text-xs text-white/70 break-all max-w-[90vw]">
+            {shareOverlay.url}
+          </div>
+        </div>
+      )}
+
       {/* Live camera background */}
       <video
         ref={videoRef}
@@ -423,6 +515,11 @@ export default function StopMotionApp() {
           <div className="absolute top-4 left-4 bg-black/60 px-3 py-1 rounded-xl text-sm backdrop-blur">
             {streamReady ? "Live" : "Starting Camera..."}
           </div>
+          {serialMissing && (
+            <div className="absolute top-4 left-32 bg-amber-500/80 text-black px-3 py-1 rounded-xl text-sm shadow backdrop-blur">
+              Serial device not detected (dev fallback)
+            </div>
+          )}
 
           {/* Film roll in lower third */}
           <div className="absolute bottom-0 w-full bg-gradient-to-t from-black/70 to-transparent p-4 flex items-end">
