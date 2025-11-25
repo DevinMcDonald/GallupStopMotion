@@ -346,9 +346,15 @@ export default function StopMotionApp() {
     };
     window.addEventListener("pagehide", onClose);
     window.addEventListener("beforeunload", onClose);
+    window.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") {
+        onClose();
+      }
+    });
     return () => {
       window.removeEventListener("pagehide", onClose);
       window.removeEventListener("beforeunload", onClose);
+      window.removeEventListener("visibilitychange", onClose);
     };
   }, []);
 

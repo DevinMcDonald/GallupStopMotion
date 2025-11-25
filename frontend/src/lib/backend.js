@@ -107,6 +107,9 @@ export async function finalizeShare(targetSessionId = sessionId) {
     headers: { "Content-Type": "application/json" },
     keepalive: true,
   });
+  if (import.meta.env.DEV) {
+    console.log("[share] finalize", targetSessionId, res.status);
+  }
   if (!res.ok) throw new Error(`Share failed: ${res.status}`);
   return res.json();
 }

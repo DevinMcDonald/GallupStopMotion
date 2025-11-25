@@ -311,6 +311,8 @@ def share_session_video(session: str | None = Query(default=None)):
     Always returns a 200-style payload describing whether anything was shared so callers
     can safely fire-and-forget during tab closes or restarts.
     """
+    print(f"[share] request for session={session or '_default'}")
+
     summary: dict[str, Any] = {
         "session": session or "_default",
         "shared": False,
@@ -321,15 +323,18 @@ def share_session_video(session: str | None = Query(default=None)):
     try:
         session_prefix, vid_path = build_video_file(session)
         summary["video_url"] = f"/videos/{session_prefix}/{vid_path.name}"
+        print(f"[share] built video at {vid_path}")
     except HTTPException as exc:
         summary["reason"] = str(exc.detail)
         summary["status"] = exc.status_code
+        print(f"[share] build failed: {summary['reason']}")
         return summary
 
     try:
         from r2_share import create_share
     except Exception as exc:
         summary["reason"] = f"R2 not configured: {exc}"
+        print(f"[share] config failure: {summary['reason']}")
         return summary
 
     try:
@@ -338,8 +343,10 @@ def share_session_video(session: str | None = Query(default=None)):
             content_type="video/mp4",
         )
         summary["shared"] = True
+        print(f"[share] uploaded {summary['share']}")
     except Exception as exc:
         summary["reason"] = f"upload failed: {exc}"
+        print(f"[share] upload failed: {summary['reason']}")
 
     return summary
 
