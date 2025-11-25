@@ -203,7 +203,7 @@ export default function StopMotionApp() {
       } else {
         setError("");
         setShareOverlay({
-          url: shareUrl,
+          url: resp?.share?.download_url || resp?.download_url || shareUrl,
           expiresAt: resp?.share?.expiresAt || resp?.expiresAt,
           key: resp?.share?.key || resp?.key,
         });

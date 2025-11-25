@@ -368,9 +368,11 @@ def share_session_video(session: str | None = Query(default=None)):
         return summary
 
     try:
+        fname = f"exports/{session_prefix}-{uuid.uuid4().hex}.mp4"
         summary["share"] = create_share(
             vid_path.read_bytes(),
             content_type="video/mp4",
+            filename=fname,
         )
         summary["shared"] = True
         print(f"[share] uploaded {summary['share']}")

@@ -27,8 +27,12 @@ s3 = boto3.client(
 )
 
 
-def create_share(video_bytes: bytes, content_type: str = "video/mp4"):
-    key = f"exports/{uuid.uuid4()}.mp4"
+def create_share(
+    video_bytes: bytes,
+    content_type: str = "video/mp4",
+    filename: str | None = None,
+):
+    key = filename or f"exports/{uuid.uuid4()}.mp4"
 
     # Upload private by default
     s3.put_object(
@@ -36,16 +40,32 @@ def create_share(video_bytes: bytes, content_type: str = "video/mp4"):
         Key=key,
         Body=video_bytes,
         ContentType=content_type,
+        ContentDisposition="attachment",
         # Optional: SSE
         # ServerSideEncryption="AES256",
     )
 
     # 24 hours for the presigned URL
     expires_seconds = 24 * 3600
+    common_params = {
+        "Bucket": R2_BUCKET,
+        "Key": key,
+        "ResponseContentDisposition": "attachment",
+    }
     url = s3.generate_presigned_url(
         "get_object",
-        Params={"Bucket": R2_BUCKET, "Key": key},
+        Params=common_params,
+        ExpiresIn=expires_seconds,
+    )
+    download_url = s3.generate_presigned_url(
+        "get_object",
+        Params=common_params,
         ExpiresIn=expires_seconds,
     )
 
-    return {"url": url, "expiresAt": int(time.time()) + expires_seconds, "key": key}
+    return {
+        "url": url,
+        "download_url": download_url,
+        "expiresAt": int(time.time()) + expires_seconds,
+        "key": key,
+    }
