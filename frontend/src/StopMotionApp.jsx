@@ -511,7 +511,7 @@ export default function StopMotionApp() {
     setIsPlaying(false);
     setPlaybackSrc("");
     setAutoplayBlocked(false);
-    setNotice("Session timed out — starting fresh.");
+    setNotice("Session timed out — starting fresh");
     setNoticeBlink(false);
     setError("");
     try {
@@ -534,7 +534,7 @@ export default function StopMotionApp() {
     }
 
     const warnTimer = setTimeout(() => {
-      setNotice("Inactivity: session will reset soon.");
+      setNotice("Inactivity: session will reset soon");
       setNoticeBlink(true);
     }, WARN_MS);
 
