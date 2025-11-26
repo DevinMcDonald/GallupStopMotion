@@ -33,6 +33,7 @@ export default function StopMotionApp() {
   const [loadingPlayback, setLoadingPlayback] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [noticeBlink, setNoticeBlink] = useState(false);
   const [frameCount, setFrameCount] = useState(0);
   const [serialMissing, setSerialMissing] = useState(false);
   const [pendingResetConfirm, setPendingResetConfirm] = useState(false);
@@ -43,6 +44,20 @@ export default function StopMotionApp() {
   const [wsInfo, setWsInfo] = useState({ connected: false, url: "", last: "" }); // dev-only badge
   const [cameras, setCameras] = useState([]);
   const [activeCamera, setActiveCamera] = useState(null);
+  const [lastActivity, setLastActivity] = useState(Date.now());
+
+  // Inactivity timings (tunable; shortened defaults for testing)
+  const WARN_MS = Number(import.meta.env?.VITE_IDLE_WARN_MS) || 10_000; // e.g., 4 * 60 * 1000 in prod
+  const TIMEOUT_MS = Number(import.meta.env?.VITE_IDLE_TIMEOUT_MS) || 15_000; // e.g., 5 * 60 * 1000 in prod
+
+  const bumpActivity = useCallback(() => {
+    setLastActivity(Date.now());
+    setNotice((n) =>
+      n?.startsWith("Inactivity") || n?.startsWith("Approaching")
+        ? ""
+        : n,
+    );
+  }, []);
 
   // --- Fresh session on load ---
   useEffect(() => {
@@ -152,6 +167,7 @@ export default function StopMotionApp() {
   // --- Capture & upload ---
   const handleCapture = useCallback(async () => {
     if (shareOverlay) return; // dismiss first
+    bumpActivity();
     if (pendingResetConfirm) setPendingResetConfirm(false);
     setNotice("");
     if (!videoRef.current || !canvasRef.current) return;
@@ -229,6 +245,7 @@ export default function StopMotionApp() {
   // --- Undo last frame ---
   const handleUndo = useCallback(async () => {
     if (shareOverlay) return;
+    bumpActivity();
     if (pendingResetConfirm) setPendingResetConfirm(false);
     setNotice("");
     setThumbnails((prev) => prev.slice(1));
@@ -253,6 +270,7 @@ export default function StopMotionApp() {
       setNotice("");
       return;
     }
+    bumpActivity();
     if (!pendingResetConfirm) {
       setPendingResetConfirm(true);
       setNotice("Press done again to upload and start a new session.");
@@ -308,6 +326,7 @@ export default function StopMotionApp() {
       setNotice("");
       return;
     }
+    bumpActivity();
     if (pendingResetConfirm) setPendingResetConfirm(false);
     setNotice("");
     if (loadingPlayback) return;
@@ -484,6 +503,64 @@ export default function StopMotionApp() {
       setNotice("");
     }
   }, [frameCount, zoomConfig, notice]);
+
+  const resetForInactivity = useCallback(async () => {
+    setShareOverlay(null);
+    setPendingResetConfirm(false);
+    setIsPlaying(false);
+    setPlaybackSrc("");
+    setAutoplayBlocked(false);
+    setNotice("");
+    setNoticeBlink(false);
+    setError("Session timed out due to inactivity.");
+    try {
+      await startFreshSession();
+    } catch {}
+    rotateSessionId();
+    try {
+      await startFreshSession();
+      setThumbnails([]);
+      setFrameCount(0);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    const now = Date.now();
+    const elapsed = now - lastActivity;
+    const hasFrames = frameCount > 0 || thumbnails.length > 0;
+    if (!hasFrames) {
+      return;
+    }
+
+    const warnTimer = setTimeout(() => {
+      setNotice("Inactivity: session will reset soon.");
+      setNoticeBlink(true);
+    }, WARN_MS);
+
+    const resetTimer = setTimeout(() => {
+      resetForInactivity();
+    }, WARN_MS + (TIMEOUT_MS - WARN_MS));
+
+    return () => {
+      clearTimeout(warnTimer);
+      clearTimeout(resetTimer);
+    };
+  }, [lastActivity, resetForInactivity, frameCount, thumbnails.length, WARN_MS, TIMEOUT_MS]);
+
+  // Global activity listeners (keys/mouse/touch)
+  useEffect(() => {
+    const onActivity = () => bumpActivity();
+    window.addEventListener("keydown", onActivity);
+    window.addEventListener("mousemove", onActivity);
+    window.addEventListener("touchstart", onActivity);
+    window.addEventListener("click", onActivity);
+    return () => {
+      window.removeEventListener("keydown", onActivity);
+      window.removeEventListener("mousemove", onActivity);
+      window.removeEventListener("touchstart", onActivity);
+      window.removeEventListener("click", onActivity);
+    };
+  }, [bumpActivity]);
 
   // --- Keyboard controls (dev & prod) ---
   useEffect(() => {
@@ -767,7 +844,9 @@ export default function StopMotionApp() {
       )}
 
       {notice && !shareOverlay && (
-        <div className="absolute top-16 left-1/2 -translate-x-1/2 bg-amber-400 text-black px-6 py-3 rounded-2xl text-lg font-semibold shadow-xl">
+        <div
+          className={`absolute top-16 left-1/2 -translate-x-1/2 bg-amber-400 text-black px-6 py-3 rounded-2xl text-lg font-semibold shadow-xl ${noticeBlink ? "animate-pulse" : ""}`}
+        >
           {notice}
         </div>
       )}
