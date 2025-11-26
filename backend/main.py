@@ -277,7 +277,11 @@ async def upload_frame(
     save_manifest(manifest_path, manifest)
 
     session_prefix = session or "_default"
-    return {"id": idx, "thumbnail_url": f"/frames/{session_prefix}/{filename}"}
+    return {
+        "id": idx,
+        "thumbnail_url": f"/frames/{session_prefix}/{filename}",
+        "count": len(manifest),
+    }
 
 
 @app.delete("/api/frames/last", status_code=204)
@@ -290,7 +294,7 @@ def delete_last(session: str | None = Query(default=None)):
         last = manifest.pop()
         (frames_dir / last["file"]).unlink(missing_ok=True)
         save_manifest(manifest_path, manifest)
-        return Response(status_code=204)
+        return {"count": len(manifest)}
 
     # Fallback: no manifest entries, look at disk
     jpgs = sorted(frames_dir.glob("*.jpg"), key=lambda p: p.name)
@@ -306,7 +310,7 @@ def delete_last(session: str | None = Query(default=None)):
     for i, p in enumerate(remaining, start=1):
         rebuilt.append({"index": i, "file": p.name})
     save_manifest(manifest_path, rebuilt)
-    return Response(status_code=204)
+    return {"count": len(rebuilt)}
 
 
 @app.delete("/api/frames/all")

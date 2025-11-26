@@ -70,7 +70,17 @@ export async function uploadFrame(blob, sid = sessionId) {
 }
 
 export async function deleteLastFrame(sid = sessionId) {
-  await fetch(withSession("/api/frames/last", sid), { method: "DELETE" });
+  const res = await fetch(withSession("/api/frames/last", sid), {
+    method: "DELETE",
+  });
+  if (!res.ok && res.status !== 204) {
+    throw new Error(`Undo failed: ${res.status}`);
+  }
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
 }
 
 export async function buildVideo(sid = sessionId) {

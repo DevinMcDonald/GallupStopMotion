@@ -6,7 +6,6 @@ import {
   buildVideo,
   startFreshSession,
   finalizeShare,
-  getPreviousSessionId,
   rotateSessionId,
   getSerialStatus,
 } from "./lib/backend";
@@ -18,6 +17,7 @@ const DEFAULT_ZOOM_CONFIG = {
   zoomStep: 0.1,
   maxFrames: 240,
 };
+const FRONTEND_MAX_FRAMES = DEFAULT_ZOOM_CONFIG.maxFrames;
 
 export default function StopMotionApp() {
   const videoRef = useRef(null);
@@ -48,12 +48,11 @@ export default function StopMotionApp() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const prevSession = getPreviousSessionId();
-
       if (cancelled) return;
       try {
         await startFreshSession();
         setThumbnails([]);
+        setFrameCount(0);
       } catch {
         // ignore reset errors here; UI will show failures on demand
       }
@@ -168,13 +167,12 @@ export default function StopMotionApp() {
       if (!w || !h) throw new Error("Video not ready");
 
       const maxFrames = zoomConfig.maxFrames || DEFAULT_ZOOM_CONFIG.maxFrames;
-      const warnThreshold = 0.9 * maxFrames;
       if (frameCount >= maxFrames) {
-        setError("Frame limit reached.");
+        setError(`Frame limit reached (${maxFrames}).`);
         return;
       }
-      if (frameCount >= warnThreshold) {
-        setNotice("Approaching max length. Press done soon.");
+      if (frameCount >= 0.9 * maxFrames) {
+        setNotice(`Approaching max length: ${frameCount}/${maxFrames} frames`);
       }
 
       canvas.width = w;
@@ -211,25 +209,39 @@ export default function StopMotionApp() {
             ...prev.filter((t) => t.id !== tempId),
           ].slice(0, 30),
         );
-        setFrameCount((c) => (data?.id ? Math.max(c, data.id) : c + 1));
+        const maxFrames = zoomConfig.maxFrames || DEFAULT_ZOOM_CONFIG.maxFrames;
+        const nextCount =
+          typeof data?.count === "number"
+            ? data.count
+            : frameCount + 1;
+        setFrameCount(nextCount);
+        if (nextCount >= 0.9 * maxFrames && nextCount < maxFrames) {
+          setNotice(`Approaching max length: ${nextCount}/${maxFrames} frames`);
+        }
       }
     } catch (e) {
       setError(e.message || "Capture failed");
     } finally {
       setIsCapturing(false);
     }
-  }, [isCapturing]);
+  }, [isCapturing, frameCount, zoomConfig, shareOverlay, pendingResetConfirm]);
 
   // --- Undo last frame ---
   const handleUndo = useCallback(async () => {
     if (shareOverlay) return;
     if (pendingResetConfirm) setPendingResetConfirm(false);
     setNotice("");
-    setFrameCount((c) => Math.max(0, c - 1));
     setThumbnails((prev) => prev.slice(1));
     try {
-      await deleteLastFrame();
-    } catch {}
+      const res = await deleteLastFrame();
+      if (res && typeof res.count === "number") {
+        setFrameCount(res.count);
+      } else {
+        setFrameCount((c) => Math.max(0, c - 1));
+      }
+    } catch (err) {
+      console.warn("undo failed", err);
+    }
   }, [shareOverlay, pendingResetConfirm]);
 
   // --- Reset all ---
@@ -254,6 +266,7 @@ export default function StopMotionApp() {
     setPlaybackSrc("");
     setAutoplayBlocked(false);
     setThumbnails([]);
+    setFrameCount(0);
     try {
       const resp = await finalizeShare();
       const shareUrl = resp?.share?.url || resp?.url;
@@ -279,6 +292,8 @@ export default function StopMotionApp() {
     rotateSessionId();
     try {
       await startFreshSession();
+      setFrameCount(0);
+      setThumbnails([]);
     } catch (e) {
       setError(e.message || "Reset failed");
     }
@@ -461,6 +476,14 @@ export default function StopMotionApp() {
     const timer = setTimeout(() => setNotice(""), 5000);
     return () => clearTimeout(timer);
   }, [notice]);
+
+  // Clear warning when below threshold
+  useEffect(() => {
+    const maxFrames = zoomConfig.maxFrames || DEFAULT_ZOOM_CONFIG.maxFrames;
+    if (frameCount < 0.9 * maxFrames && notice?.startsWith("Approaching max length")) {
+      setNotice("");
+    }
+  }, [frameCount, zoomConfig, notice]);
 
   // --- Keyboard controls (dev & prod) ---
   useEffect(() => {
@@ -649,6 +672,11 @@ export default function StopMotionApp() {
                 <div>
                   <span className="font-mono">↑</span> / <span className="font-mono">↓</span> — Zoom in/out (persists locally)
                 </div>
+                {cameras.length > 0 && (
+                  <div>
+                    <span className="font-mono">1-9</span> — Switch camera (dev only)
+                  </div>
+                )}
                 <div>
                   <span className="font-mono">Esc</span> — Stop playback
                 </div>
