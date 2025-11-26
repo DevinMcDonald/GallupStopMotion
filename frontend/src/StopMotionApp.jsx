@@ -41,6 +41,8 @@ export default function StopMotionApp() {
   const [zoomConfig, setZoomConfig] = useState(DEFAULT_ZOOM_CONFIG);
   const [showDevHelp, setShowDevHelp] = useState(import.meta.env.DEV); // visible only in dev
   const [wsInfo, setWsInfo] = useState({ connected: false, url: "", last: "" }); // dev-only badge
+  const [cameras, setCameras] = useState([]);
+  const [activeCamera, setActiveCamera] = useState(null);
 
   // --- Fresh session on load ---
   useEffect(() => {
@@ -87,7 +89,7 @@ export default function StopMotionApp() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [activeCamera]);
 
   // --- Webcam background ---
   useEffect(() => {
@@ -102,16 +104,20 @@ export default function StopMotionApp() {
           audio: false,
         });
 
-        // 2) Enumerate and pick the LAST camera
+        // 2) Enumerate and pick the selected camera (or last as fallback)
         const devices = await navigator.mediaDevices.enumerateDevices();
-        const cameras = devices.filter((d) => d.kind === "videoinput");
-        if (cameras.length === 0) throw new Error("No cameras found.");
-        const lastCam = cameras[cameras.length - 1];
+        const camDevices = devices.filter((d) => d.kind === "videoinput");
+        setCameras(camDevices);
+        if (camDevices.length === 0) throw new Error("No cameras found.");
+        const target =
+          camDevices.find((c) => c.deviceId === activeCamera) ||
+          camDevices[camDevices.length - 1];
+        setActiveCamera(target.deviceId);
 
         // 3) Open that specific device with your preferred resolution
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
-            deviceId: { exact: lastCam.deviceId },
+            deviceId: { exact: target.deviceId },
             width: { ideal: 1920 },
             height: { ideal: 1080 },
           },
@@ -532,10 +538,17 @@ export default function StopMotionApp() {
       if (import.meta.env.DEV && (e.key === "?" || (k === "/" && e.shiftKey))) {
         setShowDevHelp((v) => !v);
       }
+      if (import.meta.env.DEV && /^\d$/.test(k) && k !== "0") {
+        const idx = parseInt(k, 10) - 1;
+        if (cameras[idx]) {
+          setActiveCamera(cameras[idx].deviceId);
+          setNotice(`Switched camera to #${k}: ${cameras[idx].label || "Camera"}`);
+        }
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [handleCapture, handleUndo, handleResetAll, handlePlay, isPlaying, shareOverlay, zoom]);
+  }, [handleCapture, handleUndo, handleResetAll, handlePlay, isPlaying, shareOverlay, zoom, cameras]);
 
   return (
     <div className="relative h-screen w-screen bg-black overflow-hidden text-white select-none">
@@ -642,6 +655,24 @@ export default function StopMotionApp() {
                 <div className="mt-1 opacity-80">
                   <span className="font-mono">?</span> to hide
                 </div>
+                {cameras.length > 0 && (
+                  <div className="mt-1">
+                    Cameras:
+                    <div className="mt-1 space-y-1">
+                      {cameras.map((c, i) => (
+                        <div
+                          key={c.deviceId || i}
+                          className={`flex items-center gap-2 ${c.deviceId === activeCamera ? "text-emerald-300" : "text-white"}`}
+                        >
+                          <span className="font-mono">{i + 1}.</span>
+                          <span className="truncate max-w-[220px]">
+                            {c.label || `Camera ${i + 1}`}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* WS status badge (anchors under Dev Controls) */}
