@@ -6,7 +6,6 @@ import {
   buildVideo,
   startFreshSession,
   finalizeShare,
-  finalizeShareBeacon,
   getPreviousSessionId,
   rotateSessionId,
   getSerialStatus,
@@ -25,6 +24,7 @@ export default function StopMotionApp() {
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
   const [loadingPlayback, setLoadingPlayback] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [serialMissing, setSerialMissing] = useState(false);
   const [pendingResetConfirm, setPendingResetConfirm] = useState(false);
   const [shareOverlay, setShareOverlay] = useState(null); // { url, expiresAt, key }
@@ -36,18 +36,6 @@ export default function StopMotionApp() {
     let cancelled = false;
     (async () => {
       const prevSession = getPreviousSessionId();
-      if (prevSession) {
-        try {
-          await finalizeShare(prevSession);
-        } catch (err) {
-          console.warn("share from previous session failed", err);
-        }
-        try {
-          await startFreshSession(prevSession);
-        } catch {
-          // ignore cleanup errors for previous session
-        }
-      }
 
       if (cancelled) return;
       try {
@@ -121,6 +109,7 @@ export default function StopMotionApp() {
   const handleCapture = useCallback(async () => {
     if (shareOverlay) return; // dismiss first
     if (pendingResetConfirm) setPendingResetConfirm(false);
+    setNotice("");
     if (!videoRef.current || !canvasRef.current) return;
     if (isCapturing) return;
     setIsCapturing(true);
@@ -170,6 +159,7 @@ export default function StopMotionApp() {
   const handleUndo = useCallback(async () => {
     if (shareOverlay) return;
     if (pendingResetConfirm) setPendingResetConfirm(false);
+    setNotice("");
     setThumbnails((prev) => prev.slice(1));
     try {
       await deleteLastFrame();
@@ -182,15 +172,18 @@ export default function StopMotionApp() {
       setShareOverlay(null);
       setPendingResetConfirm(false);
       setError("");
+      setNotice("");
       return;
     }
     if (!pendingResetConfirm) {
       setPendingResetConfirm(true);
-      setError("Press reset again to share and start a new session.");
+      setNotice("Press done again to upload and start a new session.");
+      setError("");
       return;
     }
 
     setPendingResetConfirm(false);
+    setNotice("");
     setIsPlaying(false);
     setPlaybackSrc("");
     setAutoplayBlocked(false);
@@ -231,9 +224,11 @@ export default function StopMotionApp() {
       setShareOverlay(null);
       setPendingResetConfirm(false);
       setError("");
+      setNotice("");
       return;
     }
     if (pendingResetConfirm) setPendingResetConfirm(false);
+    setNotice("");
     if (loadingPlayback) return;
     setLoadingPlayback(true);
     setAutoplayBlocked(false);
@@ -394,28 +389,6 @@ export default function StopMotionApp() {
     };
   }, []);
 
-  // --- Share on tab close/reload ---
-  useEffect(() => {
-    const onClose = () => {
-      try {
-        finalizeShareBeacon();
-      } catch {
-        // ignore unload errors
-      }
-    };
-    window.addEventListener("pagehide", onClose);
-    window.addEventListener("beforeunload", onClose);
-    const onVis = () => {
-      if (document.visibilityState === "hidden") onClose();
-    };
-    window.addEventListener("visibilitychange", onVis);
-    return () => {
-      window.removeEventListener("pagehide", onClose);
-      window.removeEventListener("beforeunload", onClose);
-      window.removeEventListener("visibilitychange", onVis);
-    };
-  }, []);
-
   // --- Keyboard controls (dev & prod) ---
   useEffect(() => {
     const onKey = async (e) => {
@@ -442,7 +415,7 @@ export default function StopMotionApp() {
         return;
       }
       if (k === "r") {
-        // R: reset all
+        // R: done/upload
         e.preventDefault();
         await handleResetAll();
         return;
@@ -554,7 +527,7 @@ export default function StopMotionApp() {
                   <span className="font-mono">U</span> — Undo last
                 </div>
                 <div>
-                  <span className="font-mono">R</span> — Reset session
+                  <span className="font-mono">R</span> — Done (upload & new session)
                 </div>
                 <div>
                   <span className="font-mono">P</span> or{" "}
@@ -628,6 +601,12 @@ export default function StopMotionApp() {
               </button>
             </div>
           )}
+        </div>
+      )}
+
+      {notice && !shareOverlay && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 bg-amber-400 text-black px-6 py-3 rounded-2xl text-lg font-semibold shadow-xl">
+          {notice}
         </div>
       )}
 
