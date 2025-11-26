@@ -510,9 +510,9 @@ export default function StopMotionApp() {
     setIsPlaying(false);
     setPlaybackSrc("");
     setAutoplayBlocked(false);
-    setNotice("");
+    setNotice("Session timed out — starting fresh.");
     setNoticeBlink(false);
-    setError("Session timed out due to inactivity.");
+    setError("");
     try {
       await startFreshSession();
     } catch {}
@@ -522,7 +522,7 @@ export default function StopMotionApp() {
       setThumbnails([]);
       setFrameCount(0);
     } catch {}
-  }, []);
+  }, [rotateSessionId, startFreshSession]);
 
   useEffect(() => {
     const now = Date.now();
