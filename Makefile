@@ -2,22 +2,54 @@
 MAC_SERIAL_DEVICE = /dev/tty.usbmodem1201
 BACKEND_URL = http://localhost:8000
 SERIAL_BAUD = 115200
+BROWSER_URL ?= http://localhost:5173
 
 VENV = venv
 PYTHON = $(VENV)/bin/python3
 
+# Prefer a Chrome/Chromium/Arc/Firefox kiosk-style launch; fall back to open/xdg-open.
+BROWSER_CMD ?= $(shell \
+	if command -v google-chrome >/dev/null 2>&1; then \
+		echo "google-chrome --start-fullscreen --app=$(BROWSER_URL)"; \
+	elif command -v chromium-browser >/dev/null 2>&1; then \
+		echo "chromium-browser --start-fullscreen --app=$(BROWSER_URL)"; \
+	elif command -v chromium >/dev/null 2>&1; then \
+		echo "chromium --start-fullscreen --app=$(BROWSER_URL)"; \
+	elif command -v firefox >/dev/null 2>&1; then \
+		echo "firefox --kiosk $(BROWSER_URL)"; \
+	elif command -v open >/dev/null 2>&1; then \
+		if command -v /Applications/Arc.app/Contents/MacOS/Arc >/dev/null 2>&1; then \
+			echo "open -a \"Arc\" --args --start-fullscreen $(BROWSER_URL)"; \
+		else \
+			echo "open -a \"Google Chrome\" --args --start-fullscreen $(BROWSER_URL)"; \
+		fi; \
+	elif command -v xdg-open >/dev/null 2>&1; then \
+		echo "xdg-open $(BROWSER_URL)"; \
+	fi \
+)
+
+open-browser:
+	@if [ -n "$(BROWSER_CMD)" ]; then \
+		echo "🌐 Opening browser: $(BROWSER_CMD)"; \
+		eval $(BROWSER_CMD) >/dev/null 2>&1 & \
+	else \
+		echo "No browser opener found (tried chrome/chromium/open/xdg-open)"; \
+	fi
+
 # Start backend + frontend normally in Docker
 dev:
 	@echo "Starting backend + frontend in docker..."
-	docker compose up --build
+	docker compose up --build -d
+	@sleep 2
+	@$(MAKE) --no-print-directory open-browser
 
 # Start backend + frontend + local button monitor (with venv)
 mac:
 	@echo "Starting backend + frontend in docker..."
-	docker compose up --build &
-
+	docker compose up --build -d
 	@echo "Waiting for backend service to come up..."
 	sleep 3
+	@$(MAKE) --no-print-directory open-browser
 
 	@if [ ! -d "$(VENV)" ]; then \
 	    echo "❗ No virtual environment found at $(VENV)"; \
@@ -33,6 +65,7 @@ mac:
 	 SERIAL_PORT=$(MAC_SERIAL_DEVICE) \
 	 SERIAL_BAUD=$(SERIAL_BAUD) \
 	 /bin/bash -c "source $(VENV)/bin/activate && python3 -u backend/button_forwarder.py"
+	@$(MAKE) --no-print-directory open-browser
 
 stop:
 	@echo "Stopping containers..."

@@ -10,7 +10,13 @@ import {
   rotateSessionId,
   getSerialStatus,
 } from "./lib/backend";
-import appConfig from "./config.json";
+
+const DEFAULT_ZOOM_CONFIG = {
+  zoom: 1,
+  zoomMin: 1,
+  zoomMax: 2.5,
+  zoomStep: 0.1,
+};
 
 export default function StopMotionApp() {
   const videoRef = useRef(null);
@@ -29,7 +35,8 @@ export default function StopMotionApp() {
   const [serialMissing, setSerialMissing] = useState(false);
   const [pendingResetConfirm, setPendingResetConfirm] = useState(false);
   const [shareOverlay, setShareOverlay] = useState(null); // { url, expiresAt, key }
-  const [zoom, setZoom] = useState(appConfig?.zoom || 1);
+  const [zoom, setZoom] = useState(DEFAULT_ZOOM_CONFIG.zoom);
+  const [zoomConfig, setZoomConfig] = useState(DEFAULT_ZOOM_CONFIG);
   const [showDevHelp, setShowDevHelp] = useState(import.meta.env.DEV); // visible only in dev
   const [wsInfo, setWsInfo] = useState({ connected: false, url: "", last: "" }); // dev-only badge
 
@@ -48,18 +55,33 @@ export default function StopMotionApp() {
       }
     })();
 
-    // Load zoom from localStorage or defaults
-    try {
-      const stored = localStorage.getItem("gsm-zoom");
-      if (stored) {
-        const parsed = parseFloat(stored);
-        if (!Number.isNaN(parsed)) {
-          setZoom(parsed);
+    // Load zoom config (optional public/config.json) and persisted zoom
+    (async () => {
+      let cfg = { ...DEFAULT_ZOOM_CONFIG };
+      try {
+        const res = await fetch("/config.json", { cache: "no-store" });
+        if (res.ok) {
+          const data = await res.json();
+          cfg = { ...cfg, ...data };
         }
+      } catch {
+        // ignore missing/parse errors
       }
-    } catch {
-      // ignore
-    }
+      setZoomConfig(cfg);
+      try {
+        const stored = localStorage.getItem("gsm-zoom");
+        const base = stored ? parseFloat(stored) : cfg.zoom;
+        if (!Number.isNaN(base)) {
+          const clamped = Math.max(cfg.zoomMin, Math.min(cfg.zoomMax, base));
+          setZoom(clamped);
+        } else {
+          setZoom(cfg.zoom);
+        }
+      } catch {
+        setZoom(cfg.zoom);
+      }
+    })();
+
     return () => {
       cancelled = true;
     };
@@ -141,7 +163,10 @@ export default function StopMotionApp() {
       canvas.height = h;
       const ctx = canvas.getContext("2d");
       // Crop toward center based on zoom factor
-      const zoomFactor = Math.max(appConfig.zoomMin || 1, Math.min(appConfig.zoomMax || 2.5, zoom));
+      const zoomFactor = Math.max(
+        zoomConfig.zoomMin || DEFAULT_ZOOM_CONFIG.zoomMin,
+        Math.min(zoomConfig.zoomMax || DEFAULT_ZOOM_CONFIG.zoomMax, zoom),
+      );
       const cropW = w / zoomFactor;
       const cropH = h / zoomFactor;
       const sx = (w - cropW) / 2;
@@ -456,7 +481,10 @@ export default function StopMotionApp() {
       }
       if (k === "arrowup") {
         e.preventDefault();
-        const next = Math.min((appConfig.zoomMax || 2.5), zoom + (appConfig.zoomStep || 0.1));
+        const next = Math.min(
+          zoomConfig.zoomMax || DEFAULT_ZOOM_CONFIG.zoomMax,
+          zoom + (zoomConfig.zoomStep || DEFAULT_ZOOM_CONFIG.zoomStep),
+        );
         setZoom(next);
         try {
           localStorage.setItem("gsm-zoom", String(next));
@@ -466,7 +494,10 @@ export default function StopMotionApp() {
       }
       if (k === "arrowdown") {
         e.preventDefault();
-        const next = Math.max((appConfig.zoomMin || 1), zoom - (appConfig.zoomStep || 0.1));
+        const next = Math.max(
+          zoomConfig.zoomMin || DEFAULT_ZOOM_CONFIG.zoomMin,
+          zoom - (zoomConfig.zoomStep || DEFAULT_ZOOM_CONFIG.zoomStep),
+        );
         setZoom(next);
         try {
           localStorage.setItem("gsm-zoom", String(next));
@@ -529,7 +560,10 @@ export default function StopMotionApp() {
         playsInline
         className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${isPlaying ? "opacity-0" : "opacity-100"}`}
         style={{
-          transform: `scale(${Math.max(appConfig.zoomMin || 1, Math.min(appConfig.zoomMax || 2.5, zoom))})`,
+          transform: `scale(${Math.max(
+            zoomConfig.zoomMin || DEFAULT_ZOOM_CONFIG.zoomMin,
+            Math.min(zoomConfig.zoomMax || DEFAULT_ZOOM_CONFIG.zoomMax, zoom),
+          )})`,
           transformOrigin: "center",
         }}
       />
@@ -586,7 +620,7 @@ export default function StopMotionApp() {
                   <span className="font-mono">Enter</span> — Play
                 </div>
                 <div>
-                  <span className="font-mono">↑</span> / <span className="font-mono">↓</span> — Zoom in/out (saves to config)
+                  <span className="font-mono">↑</span> / <span className="font-mono">↓</span> — Zoom in/out (persists locally)
                 </div>
                 <div>
                   <span className="font-mono">Esc</span> — Stop playback

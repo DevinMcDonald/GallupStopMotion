@@ -3,7 +3,12 @@ import os
 import sys
 
 import requests
-from buttonMonitor import BAUD, DEVICE, SerialDeviceMonitor  # your serial reader
+from buttonMonitor import (
+    BAUD,
+    DEVICE,
+    CliMonitor,
+    SerialDeviceMonitor,
+)  # your serial reader
 
 BACKEND = os.getenv("BACKEND", "http://localhost:8000")
 TOKEN = os.getenv("TOKEN", "super-secret-token")  # keep in sync with backend
@@ -44,12 +49,22 @@ def send(evt_raw: str) -> None:
 
 
 def main() -> None:
-    monitor = SerialDeviceMonitor(DEVICE, BAUD)
-    for (
-        evt
-    ) in (
-        monitor.commands()
-    ):  # assumes this yields strings like 'CAPTURE', 'BTN_A', etc.
+    monitor = None
+    try:
+        monitor = SerialDeviceMonitor(DEVICE, BAUD)
+    except Exception as exc:
+        print(
+            "[forwarder] serial unavailable, falling back to keyboard (or skipping):",
+            exc,
+            file=sys.stderr,
+        )
+        if sys.stdin.isatty():
+            monitor = CliMonitor()
+        else:
+            print("[forwarder] no TTY available; skipping button forwarding.")
+            return
+
+    for evt in monitor.commands():  # e.g., CAPTURE/BTN_A/etc.
         print("[forwarder] read event:", evt)
         send(evt)
 
