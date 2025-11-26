@@ -3,10 +3,11 @@
 // Leave VITE_API_BASE empty when using the Vite proxy. Set to your backend URL
 // (e.g. http://localhost:8000) only if you are NOT using the proxy.
 export const getApiBase = () =>
-  (import.meta.env?.VITE_API_BASE ?? process.env?.VITE_API_BASE ?? "").replace(
-    /\/$/,
-    "",
-  );
+  (
+    import.meta.env?.VITE_API_BASE ??
+    (typeof process !== "undefined" ? process.env?.VITE_API_BASE : "") ??
+    ""
+  ).replace(/\/$/, "");
 
 export const resolveUrlWithBase = (u, base) => {
   if (!u) return "";
