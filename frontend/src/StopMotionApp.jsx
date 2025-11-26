@@ -410,6 +410,13 @@ export default function StopMotionApp() {
     };
   }, []);
 
+  // Auto-clear notices after a delay (e.g., zoom adjustments)
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(""), 5000);
+    return () => clearTimeout(timer);
+  }, [notice]);
+
   // --- Keyboard controls (dev & prod) ---
   useEffect(() => {
     const onKey = async (e) => {
