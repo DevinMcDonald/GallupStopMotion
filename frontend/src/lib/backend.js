@@ -2,17 +2,26 @@
 
 // Leave VITE_API_BASE empty when using the Vite proxy. Set to your backend URL
 // (e.g. http://localhost:8000) only if you are NOT using the proxy.
-export const API_BASE = (import.meta.env.VITE_API_BASE ?? "").replace(/\/$/, "");
+export const getApiBase = () =>
+  (import.meta.env?.VITE_API_BASE ?? process.env?.VITE_API_BASE ?? "").replace(
+    /\/$/,
+    "",
+  );
+
+export const resolveUrlWithBase = (u, base) => {
+  if (!u) return "";
+  if (/^https?:\/\//i.test(u)) return u;
+  if (!base) return u.startsWith("/") ? u : `/${u}`;
+  const path = u.startsWith("/") ? u : `/${u}`;
+  return `${base}${path}`;
+};
 
 // Resolve a backend-relative path to an absolute/requestable URL.
 // - With proxy (API_BASE=""), keep it relative so Vite forwards (/api, /frames, /videos).
 // - Without proxy, prefix with API_BASE.
 export const resolveUrl = (u) => {
-  if (!u) return "";
-  if (/^https?:\/\//i.test(u)) return u;
-  if (!API_BASE) return u.startsWith("/") ? u : `/${u}`;
-  const path = u.startsWith("/") ? u : `/${u}`;
-  return `${API_BASE}${path}`;
+  const base = getApiBase();
+  return resolveUrlWithBase(u, base);
 };
 
 // --- Session management ---
@@ -48,7 +57,8 @@ export function rotateSessionId() {
 
 // Helper to build a URL for an endpoint with optional session query
 const withSession = (path, sid = sessionId) => {
-  const url = `${API_BASE || ""}${path}`;
+  const base = getApiBase();
+  const url = `${base || ""}${path}`;
   const sep = url.includes("?") ? "&" : "?";
   return `${url}${sep}session=${encodeURIComponent(sid)}`;
 };
@@ -97,7 +107,8 @@ export async function resetAll(targetSessionId = sessionId) {
   });
   if (res.status === 404) {
     // Fallback: some backends might expose a global reset without session param
-    res = await fetch(`${API_BASE || ""}/api/frames/all`, { method: "DELETE" });
+    const base = getApiBase();
+    res = await fetch(`${base || ""}/api/frames/all`, { method: "DELETE" });
   }
   if (!res.ok && res.status !== 404) {
     throw new Error(`Reset failed: ${res.status}`);

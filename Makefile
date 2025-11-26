@@ -71,6 +71,17 @@ stop:
 	@echo "Stopping containers..."
 	docker compose down
 
+test:
+	@echo "Running backend tests..."
+	@if [ ! -d "$(VENV)" ]; then \
+	    echo "Creating virtualenv at $(VENV)"; \
+	    python3 -m venv $(VENV); \
+	fi
+	@$(VENV)/bin/pip install -q -r backend/requirements.txt
+	cd backend && ../$(PYTHON) -m pytest ../tests/backend
+	@echo "Running frontend tests..."
+	cd frontend && npm run test
+
 # Real deployment on Linux
 linux:
 	@echo "Starting Linux deployment with direct serial mapping..."
