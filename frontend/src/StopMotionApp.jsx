@@ -10,6 +10,7 @@ import {
   rotateSessionId,
   getSerialStatus,
 } from "./lib/backend";
+import appConfig from "./config.json";
 
 export default function StopMotionApp() {
   const videoRef = useRef(null);
@@ -28,6 +29,7 @@ export default function StopMotionApp() {
   const [serialMissing, setSerialMissing] = useState(false);
   const [pendingResetConfirm, setPendingResetConfirm] = useState(false);
   const [shareOverlay, setShareOverlay] = useState(null); // { url, expiresAt, key }
+  const [zoom, setZoom] = useState(appConfig?.zoom || 1);
   const [showDevHelp, setShowDevHelp] = useState(import.meta.env.DEV); // visible only in dev
   const [wsInfo, setWsInfo] = useState({ connected: false, url: "", last: "" }); // dev-only badge
 
@@ -45,6 +47,19 @@ export default function StopMotionApp() {
         // ignore reset errors here; UI will show failures on demand
       }
     })();
+
+    // Load zoom from localStorage or defaults
+    try {
+      const stored = localStorage.getItem("gsm-zoom");
+      if (stored) {
+        const parsed = parseFloat(stored);
+        if (!Number.isNaN(parsed)) {
+          setZoom(parsed);
+        }
+      }
+    } catch {
+      // ignore
+    }
     return () => {
       cancelled = true;
     };
@@ -125,7 +140,13 @@ export default function StopMotionApp() {
       canvas.width = w;
       canvas.height = h;
       const ctx = canvas.getContext("2d");
-      ctx.drawImage(video, 0, 0, w, h);
+      // Crop toward center based on zoom factor
+      const zoomFactor = Math.max(appConfig.zoomMin || 1, Math.min(appConfig.zoomMax || 2.5, zoom));
+      const cropW = w / zoomFactor;
+      const cropH = h / zoomFactor;
+      const sx = (w - cropW) / 2;
+      const sy = (h - cropH) / 2;
+      ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, w, h);
 
       const blob = await new Promise((resolve) =>
         canvas.toBlob(resolve, "image/jpeg", 0.9),
@@ -414,8 +435,8 @@ export default function StopMotionApp() {
         await handleUndo();
         return;
       }
-      if (k === "r") {
-        // R: done/upload
+      if (k === "d") {
+        // D: done/upload
         e.preventDefault();
         await handleResetAll();
         return;
@@ -424,6 +445,26 @@ export default function StopMotionApp() {
         // P or Enter: play
         e.preventDefault();
         await handlePlay();
+        return;
+      }
+      if (k === "arrowup") {
+        e.preventDefault();
+        const next = Math.min((appConfig.zoomMax || 2.5), zoom + (appConfig.zoomStep || 0.1));
+        setZoom(next);
+        try {
+          localStorage.setItem("gsm-zoom", String(next));
+        } catch {}
+        setNotice(`Zoom: ${next.toFixed(1)}x`);
+        return;
+      }
+      if (k === "arrowdown") {
+        e.preventDefault();
+        const next = Math.max((appConfig.zoomMin || 1), zoom - (appConfig.zoomStep || 0.1));
+        setZoom(next);
+        try {
+          localStorage.setItem("gsm-zoom", String(next));
+        } catch {}
+        setNotice(`Zoom: ${next.toFixed(1)}x`);
         return;
       }
       if (k === "escape") {
@@ -442,7 +483,7 @@ export default function StopMotionApp() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [handleCapture, handleUndo, handleResetAll, handlePlay, isPlaying, shareOverlay]);
+  }, [handleCapture, handleUndo, handleResetAll, handlePlay, isPlaying, shareOverlay, zoom]);
 
   return (
     <div className="relative h-screen w-screen bg-black overflow-hidden text-white select-none">
@@ -480,6 +521,10 @@ export default function StopMotionApp() {
         muted
         playsInline
         className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${isPlaying ? "opacity-0" : "opacity-100"}`}
+        style={{
+          transform: `scale(${Math.max(appConfig.zoomMin || 1, Math.min(appConfig.zoomMax || 2.5, zoom))})`,
+          transformOrigin: "center",
+        }}
       />
 
       {/* Build mode UI (no on-screen buttons) */}
@@ -527,11 +572,14 @@ export default function StopMotionApp() {
                   <span className="font-mono">U</span> — Undo last
                 </div>
                 <div>
-                  <span className="font-mono">R</span> — Done (upload & new session)
+                  <span className="font-mono">D</span> — Done (upload & new session)
                 </div>
                 <div>
                   <span className="font-mono">P</span> or{" "}
                   <span className="font-mono">Enter</span> — Play
+                </div>
+                <div>
+                  <span className="font-mono">↑</span> / <span className="font-mono">↓</span> — Zoom in/out (saves to config)
                 </div>
                 <div>
                   <span className="font-mono">Esc</span> — Stop playback
