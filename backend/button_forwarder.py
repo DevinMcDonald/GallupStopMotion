@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import sys
+import time
 
 import requests
 from buttonMonitor import (
@@ -9,6 +10,9 @@ from buttonMonitor import (
     CliMonitor,
     SerialDeviceMonitor,
 )  # your serial reader
+
+BUTTON_MIN_INTERVAL = float(os.getenv("BUTTON_MIN_INTERVAL", "1.0"))
+last_sent: float | None = None
 
 BACKEND = os.getenv("BACKEND", "http://localhost:8000")
 TOKEN = os.getenv("TOKEN", "super-secret-token")  # keep in sync with backend
@@ -29,6 +33,16 @@ EVENT_MAP = {
 
 
 def send(evt_raw: str) -> None:
+    global last_sent
+
+    now = time.time()
+    if last_sent is not None and (now - last_sent) < BUTTON_MIN_INTERVAL:
+        print(
+            f"[forwarder] rate-limited ({BUTTON_MIN_INTERVAL}s) skipping {evt_raw}",
+            file=sys.stderr,
+        )
+        return
+
     etype = EVENT_MAP.get(evt_raw, evt_raw).lower()
     if etype not in {"capture", "play", "reset"}:
         print(f"[forwarder] ignoring unknown event: {evt_raw!r} -> {etype!r}")
@@ -44,6 +58,7 @@ def send(evt_raw: str) -> None:
             print(f"[forwarder] backend rejected {etype}: {r.status_code} {r.text}")
         else:
             print(f"[forwarder] sent {etype}: {r.status_code}")
+            last_sent = now
     except Exception as e:
         print("[forwarder] send failed:", e, file=sys.stderr)
 

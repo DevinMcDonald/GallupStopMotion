@@ -62,7 +62,10 @@ export async function uploadFrame(blob, sid = sessionId) {
     method: "POST",
     body: form,
   });
-  if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Upload failed: ${res.status}`);
+  }
   return res.json(); // { id, thumbnail_url? }
 }
 

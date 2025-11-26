@@ -16,6 +16,7 @@ const DEFAULT_ZOOM_CONFIG = {
   zoomMin: 1,
   zoomMax: 2.5,
   zoomStep: 0.1,
+  maxFrames: 240,
 };
 
 export default function StopMotionApp() {
@@ -32,6 +33,7 @@ export default function StopMotionApp() {
   const [loadingPlayback, setLoadingPlayback] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [frameCount, setFrameCount] = useState(0);
   const [serialMissing, setSerialMissing] = useState(false);
   const [pendingResetConfirm, setPendingResetConfirm] = useState(false);
   const [shareOverlay, setShareOverlay] = useState(null); // { url, expiresAt, key }
@@ -159,6 +161,16 @@ export default function StopMotionApp() {
       const h = video.videoHeight;
       if (!w || !h) throw new Error("Video not ready");
 
+      const maxFrames = zoomConfig.maxFrames || DEFAULT_ZOOM_CONFIG.maxFrames;
+      const warnThreshold = 0.9 * maxFrames;
+      if (frameCount >= maxFrames) {
+        setError("Frame limit reached.");
+        return;
+      }
+      if (frameCount >= warnThreshold) {
+        setNotice("Approaching max length. Press done soon.");
+      }
+
       canvas.width = w;
       canvas.height = h;
       const ctx = canvas.getContext("2d");
@@ -193,6 +205,7 @@ export default function StopMotionApp() {
             ...prev.filter((t) => t.id !== tempId),
           ].slice(0, 30),
         );
+        setFrameCount((c) => (data?.id ? Math.max(c, data.id) : c + 1));
       }
     } catch (e) {
       setError(e.message || "Capture failed");
@@ -206,6 +219,7 @@ export default function StopMotionApp() {
     if (shareOverlay) return;
     if (pendingResetConfirm) setPendingResetConfirm(false);
     setNotice("");
+    setFrameCount((c) => Math.max(0, c - 1));
     setThumbnails((prev) => prev.slice(1));
     try {
       await deleteLastFrame();

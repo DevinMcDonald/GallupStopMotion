@@ -244,6 +244,10 @@ def build_video_file(session: str | None) -> tuple[str, Path]:
 
 from fastapi import File, UploadFile
 
+# Frame limit (30s @ 8fps = 240)
+MAX_FRAMES = int(os.getenv("MAX_FRAMES", "240"))
+# Debounce physical button events (seconds)
+BUTTON_MIN_INTERVAL = float(os.getenv("BUTTON_MIN_INTERVAL", "1.0"))
 @app.post("/api/frames")
 async def upload_frame(
     frame: UploadFile = File(...),
@@ -255,6 +259,12 @@ async def upload_frame(
     """
     frames_dir, _, manifest_path = session_dirs(session)
     manifest = load_manifest(manifest_path)
+
+    if len(manifest) >= MAX_FRAMES:
+        return Response(
+            status_code=429,
+            content=f"Frame limit reached ({MAX_FRAMES}).",
+        )
 
     idx = next_index(manifest)
     filename = f"{idx:06d}.jpg"  # ensures sort order by name too
