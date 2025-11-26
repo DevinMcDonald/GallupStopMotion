@@ -47,15 +47,13 @@ export default function StopMotionApp() {
   const [lastActivity, setLastActivity] = useState(Date.now());
 
   // Inactivity timings (tunable; shortened defaults for testing)
-  const WARN_MS = Number(import.meta.env?.VITE_IDLE_WARN_MS) || 10_000; // e.g., 4 * 60 * 1000 in prod
-  const TIMEOUT_MS = Number(import.meta.env?.VITE_IDLE_TIMEOUT_MS) || 15_000; // e.g., 5 * 60 * 1000 in prod
+  const WARN_MS = 120_000;
+  const TIMEOUT_MS = 180_000;
 
   const bumpActivity = useCallback(() => {
     setLastActivity(Date.now());
     setNotice((n) =>
-      n?.startsWith("Inactivity") || n?.startsWith("Approaching")
-        ? ""
-        : n,
+      n?.startsWith("Inactivity") || n?.startsWith("Approaching") ? "" : n,
     );
   }, []);
 
@@ -227,9 +225,7 @@ export default function StopMotionApp() {
         );
         const maxFrames = zoomConfig.maxFrames || DEFAULT_ZOOM_CONFIG.maxFrames;
         const nextCount =
-          typeof data?.count === "number"
-            ? data.count
-            : frameCount + 1;
+          typeof data?.count === "number" ? data.count : frameCount + 1;
         setFrameCount(nextCount);
         if (nextCount >= 0.9 * maxFrames && nextCount < maxFrames) {
           setNotice(`Approaching max length: ${nextCount}/${maxFrames} frames`);
@@ -492,6 +488,8 @@ export default function StopMotionApp() {
   // Auto-clear notices after a delay (e.g., zoom adjustments)
   useEffect(() => {
     if (!notice) return;
+    // Keep inactivity warning visible until reset/interaction
+    if (notice.startsWith("Inactivity:")) return;
     const timer = setTimeout(() => setNotice(""), 5000);
     return () => clearTimeout(timer);
   }, [notice]);
@@ -499,7 +497,10 @@ export default function StopMotionApp() {
   // Clear warning when below threshold
   useEffect(() => {
     const maxFrames = zoomConfig.maxFrames || DEFAULT_ZOOM_CONFIG.maxFrames;
-    if (frameCount < 0.9 * maxFrames && notice?.startsWith("Approaching max length")) {
+    if (
+      frameCount < 0.9 * maxFrames &&
+      notice?.startsWith("Approaching max length")
+    ) {
       setNotice("");
     }
   }, [frameCount, zoomConfig, notice]);
@@ -537,15 +538,25 @@ export default function StopMotionApp() {
       setNoticeBlink(true);
     }, WARN_MS);
 
-    const resetTimer = setTimeout(() => {
-      resetForInactivity();
-    }, WARN_MS + (TIMEOUT_MS - WARN_MS));
+    const resetTimer = setTimeout(
+      () => {
+        resetForInactivity();
+      },
+      WARN_MS + (TIMEOUT_MS - WARN_MS),
+    );
 
     return () => {
       clearTimeout(warnTimer);
       clearTimeout(resetTimer);
     };
-  }, [lastActivity, resetForInactivity, frameCount, thumbnails.length, WARN_MS, TIMEOUT_MS]);
+  }, [
+    lastActivity,
+    resetForInactivity,
+    frameCount,
+    thumbnails.length,
+    WARN_MS,
+    TIMEOUT_MS,
+  ]);
 
   // Global activity listeners (keys/mouse/touch)
   useEffect(() => {
@@ -642,13 +653,24 @@ export default function StopMotionApp() {
         const idx = parseInt(k, 10) - 1;
         if (cameras[idx]) {
           setActiveCamera(cameras[idx].deviceId);
-          setNotice(`Switched camera to #${k}: ${cameras[idx].label || "Camera"}`);
+          setNotice(
+            `Switched camera to #${k}: ${cameras[idx].label || "Camera"}`,
+          );
         }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [handleCapture, handleUndo, handleResetAll, handlePlay, isPlaying, shareOverlay, zoom, cameras]);
+  }, [
+    handleCapture,
+    handleUndo,
+    handleResetAll,
+    handlePlay,
+    isPlaying,
+    shareOverlay,
+    zoom,
+    cameras,
+  ]);
 
   return (
     <div className="relative h-screen w-screen bg-black overflow-hidden text-white select-none">
@@ -740,18 +762,22 @@ export default function StopMotionApp() {
                   <span className="font-mono">U</span> — Undo last
                 </div>
                 <div>
-                  <span className="font-mono">D</span> — Done (upload & new session)
+                  <span className="font-mono">D</span> — Done (upload & new
+                  session)
                 </div>
                 <div>
                   <span className="font-mono">P</span> or{" "}
                   <span className="font-mono">Enter</span> — Play
                 </div>
                 <div>
-                  <span className="font-mono">↑</span> / <span className="font-mono">↓</span> — Zoom in/out (persists locally)
+                  <span className="font-mono">↑</span> /{" "}
+                  <span className="font-mono">↓</span> — Zoom in/out (persists
+                  locally)
                 </div>
                 {cameras.length > 0 && (
                   <div>
-                    <span className="font-mono">1-9</span> — Switch camera (dev only)
+                    <span className="font-mono">1-9</span> — Switch camera (dev
+                    only)
                   </div>
                 )}
                 <div>
