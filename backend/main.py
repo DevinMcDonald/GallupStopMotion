@@ -5,9 +5,9 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import uuid
-import sys
 from glob import glob
 from pathlib import Path
 from typing import Any
@@ -16,11 +16,11 @@ from fastapi import (
     Body,
     FastAPI,
     Header,
+    HTTPException,
     Query,
     Response,
     WebSocket,
     WebSocketDisconnect,
-    HTTPException,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -158,9 +158,7 @@ def build_video_file(session: str | None) -> tuple[str, Path]:
 
     ffmpeg_bin = globals().get("FFMPEG") or shutil.which("ffmpeg")
     if not ffmpeg_bin:
-        raise HTTPException(
-            status_code=503, detail="ffmpeg not available in container"
-        )
+        raise HTTPException(status_code=503, detail="ffmpeg not available in container")
 
     manifest = load_manifest(manifest_path)
     if not manifest:
@@ -248,6 +246,8 @@ from fastapi import File, UploadFile
 MAX_FRAMES = int(os.getenv("MAX_FRAMES", "240"))
 # Debounce physical button events (seconds)
 BUTTON_MIN_INTERVAL = float(os.getenv("BUTTON_MIN_INTERVAL", "1.0"))
+
+
 @app.post("/api/frames")
 async def upload_frame(
     frame: UploadFile = File(...),

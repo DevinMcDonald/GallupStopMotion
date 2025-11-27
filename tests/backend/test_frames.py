@@ -1,6 +1,5 @@
 import importlib
 import io
-import os
 import sys
 
 import pytest
@@ -14,7 +13,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("MAX_FRAMES", "3")
 
     # ensure we import a fresh app with the new env
-    sys.modules.pop("backend.main", None)
+    _ = sys.modules.pop("backend.main", None)
     main = importlib.import_module("backend.main")
     return TestClient(main.app)
 
@@ -50,7 +49,9 @@ def test_frame_limit_enforced(client):
         assert (
             client.post(
                 "/api/frames",
-                files={"frame": ("f.jpg", io.BytesIO(make_frame_bytes()), "image/jpeg")},
+                files={
+                    "frame": ("f.jpg", io.BytesIO(make_frame_bytes()), "image/jpeg")
+                },
             ).status_code
             == 200
         )

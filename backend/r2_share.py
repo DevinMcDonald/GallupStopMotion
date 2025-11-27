@@ -7,7 +7,7 @@ import boto3
 from botocore.client import Config
 from dotenv import load_dotenv
 
-load_dotenv()  # Load environment variables from .env file
+_ = load_dotenv()  # Load environment variables from .env file
 
 R2_ACCOUNT_ID = os.environ["R2_ACCOUNT_ID"]
 R2_ACCESS_KEY_ID = os.environ["R2_ACCESS_KEY_ID"]

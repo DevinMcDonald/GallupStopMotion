@@ -10,4 +10,4 @@ if str(ROOT) not in sys.path:
 # Optionally ensure env file in repo root is loaded by tests if needed
 dotenv_path = ROOT / ".env"
 if dotenv_path.exists():
-    os.environ.setdefault("DOTENV_PATH", str(dotenv_path))
+    _ = os.environ.setdefault("DOTENV_PATH", str(dotenv_path))
