@@ -3,6 +3,8 @@ MAC_SERIAL_DEVICE = /dev/tty.usbmodem1201
 BACKEND_URL = http://localhost:8000
 SERIAL_BAUD = 115200
 BROWSER_URL ?= http://localhost:5173
+LINUX_ENV_DEV ?= .env.linux.dev
+LINUX_ENV_PROD ?= .env.linux.prod
 
 VENV = venv
 PYTHON = $(VENV)/bin/python3
@@ -86,3 +88,21 @@ test:
 linux:
 	@echo "Starting Linux deployment with direct serial mapping..."
 	COMPOSE_PROFILES="linux,mcu" docker compose up --build
+
+# Detached dev stack on Linux (with MCU profile) using an env file override
+linux-dev:
+	@if [ ! -f "$(LINUX_ENV_DEV)" ]; then \
+		echo "Missing $(LINUX_ENV_DEV). Create it with your production-like settings (e.g., R2 keys, tokens)."; \
+		exit 1; \
+	fi
+	@echo "Starting Linux dev stack with profiles: linux,mcu"
+	COMPOSE_PROFILES="linux,mcu" docker compose --env-file $(LINUX_ENV_DEV) up --build -d
+
+# Detached production stack on Linux (no MCU profile by default) using an env file override
+linux-prod:
+	@if [ ! -f "$(LINUX_ENV_PROD)" ]; then \
+		echo "Missing $(LINUX_ENV_PROD). Create it with your production secrets (e.g., R2 keys, tokens)."; \
+		exit 1; \
+	fi
+	@echo "Starting Linux production stack with profiles: linux"
+	COMPOSE_PROFILES="linux" docker compose --env-file $(LINUX_ENV_PROD) up --build -d
