@@ -20,7 +20,9 @@ BROWSER_CMD ?= $(shell \
 	elif command -v firefox >/dev/null 2>&1; then \
 		echo "firefox --kiosk $(BROWSER_URL)"; \
 	elif command -v open >/dev/null 2>&1; then \
-		if command -v /Applications/Arc.app/Contents/MacOS/Arc >/dev/null 2>&1; then \
+		if [ -x "/Applications/Safari.app/Contents/MacOS/Safari" ]; then \
+			echo "open -a \"Safari\" $(BROWSER_URL)"; \
+		elif [ -x \"/Applications/Arc.app/Contents/MacOS/Arc\" ]; then \
 			echo "open -a \"Arc\" --args --start-fullscreen $(BROWSER_URL)"; \
 		else \
 			echo "open -a \"Google Chrome\" --args --start-fullscreen $(BROWSER_URL)"; \
