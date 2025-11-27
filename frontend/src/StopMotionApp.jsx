@@ -18,6 +18,7 @@ const DEFAULT_ZOOM_CONFIG = {
   maxFrames: 240,
 };
 const FRONTEND_MAX_FRAMES = DEFAULT_ZOOM_CONFIG.maxFrames;
+const IS_DEV = import.meta.env.DEV;
 
 export default function StopMotionApp() {
   const videoRef = useRef(null);
@@ -40,7 +41,7 @@ export default function StopMotionApp() {
   const [shareOverlay, setShareOverlay] = useState(null); // { url, expiresAt, key }
   const [zoom, setZoom] = useState(DEFAULT_ZOOM_CONFIG.zoom);
   const [zoomConfig, setZoomConfig] = useState(DEFAULT_ZOOM_CONFIG);
-  const [showDevHelp, setShowDevHelp] = useState(import.meta.env.DEV); // visible only in dev
+  const [showDevHelp, setShowDevHelp] = useState(IS_DEV); // visible only in dev
   const [wsInfo, setWsInfo] = useState({ connected: false, url: "", last: "" }); // dev-only badge
   const [cameras, setCameras] = useState([]);
   const [activeCamera, setActiveCamera] = useState(null);
@@ -395,7 +396,7 @@ export default function StopMotionApp() {
       ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
-        if (import.meta.env.DEV) console.log("[ws] open", wsUrl);
+        if (IS_DEV) console.log("[ws] open", wsUrl);
         setWsInfo((p) => ({ ...p, connected: true, url: wsUrl }));
         // Optional keepalive to keep proxies/load balancers happy
         pingTimer = setInterval(() => {
@@ -435,16 +436,15 @@ export default function StopMotionApp() {
           if (t === "play") return void handlePlay();
           if (t === "reset") return void handleResetAll();
           if (t === "undo") return void handleUndo();
-          if (import.meta.env.DEV) console.log("[ws] ignored message", msg);
+          if (IS_DEV) console.log("[ws] ignored message", msg);
         } catch (err) {
-          if (import.meta.env.DEV) console.warn("[ws] bad message", e.data);
+          if (IS_DEV) console.warn("[ws] bad message", e.data);
           setWsInfo((p) => ({ ...p, last: "bad-message" }));
         }
       };
 
       ws.onclose = (evt) => {
-        if (import.meta.env.DEV)
-          console.log("[ws] close", evt?.code, evt?.reason);
+        if (IS_DEV) console.log("[ws] close", evt?.code, evt?.reason);
         clearInterval(pingTimer);
         setWsInfo((p) => ({
           ...p,
@@ -650,10 +650,10 @@ export default function StopMotionApp() {
         return;
       }
       // toggle dev help with "?" (Shift+/) — dev only
-      if (import.meta.env.DEV && (e.key === "?" || (k === "/" && e.shiftKey))) {
+      if (IS_DEV && (e.key === "?" || (k === "/" && e.shiftKey))) {
         setShowDevHelp((v) => !v);
       }
-      if (import.meta.env.DEV && /^\d$/.test(k) && k !== "0") {
+      if (IS_DEV && /^\d$/.test(k) && k !== "0") {
         const idx = parseInt(k, 10) - 1;
         if (cameras[idx]) {
           setActiveCamera(cameras[idx].deviceId);

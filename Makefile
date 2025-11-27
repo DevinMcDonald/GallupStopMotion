@@ -3,8 +3,6 @@ MAC_SERIAL_DEVICE = /dev/tty.usbmodem1201
 BACKEND_URL = http://localhost:8000
 SERIAL_BAUD = 115200
 BROWSER_URL ?= http://localhost:5173
-LINUX_ENV_DEV ?= .env.linux.dev
-LINUX_ENV_PROD ?= .env.linux.prod
 
 VENV = venv
 PYTHON = $(VENV)/bin/python3
@@ -42,19 +40,11 @@ open-browser:
 
 # Start backend + frontend normally in Docker
 dev:
-	@echo "Starting backend + frontend in docker..."
-	docker compose up --build -d
-	@sleep 2
-	@$(MAKE) --no-print-directory open-browser
-
-# Start backend + frontend + local button monitor (with venv)
-mac:
-	@echo "Starting backend + frontend in docker..."
-	docker compose up --build -d
+	@echo "Starting dev stack (frontend=dev)..."
+	FRONTEND_MODE=dev NODE_ENV=development docker compose up --build -d
 	@echo "Waiting for backend service to come up..."
 	sleep 3
 	@$(MAKE) --no-print-directory open-browser
-
 	@if [ ! -d "$(VENV)" ]; then \
 	    echo "❗ No virtual environment found at $(VENV)"; \
 	    echo "Run this first:"; \
@@ -62,7 +52,27 @@ mac:
 	    echo "  $(VENV)/bin/pip install -r backend/requirements.txt"; \
 	    exit 1; \
 	fi
+	@echo "✅ Activating virtual environment: $(VENV)"
+	@echo "🔌 Starting LOCAL button monitor on $(MAC_SERIAL_DEVICE)"
+	@BACKEND_URL=$(BACKEND_URL) \
+	 SERIAL_PORT=$(MAC_SERIAL_DEVICE) \
+	 SERIAL_BAUD=$(SERIAL_BAUD) \
+	 /bin/bash -c "source $(VENV)/bin/activate && python3 -u backend/button_forwarder.py"
+	@$(MAKE) --no-print-directory open-browser
 
+prod:
+	@echo "Starting prod stack (frontend=prod)..."
+	FRONTEND_MODE=prod NODE_ENV=production docker compose up --build -d
+	@echo "Waiting for backend service to come up..."
+	sleep 3
+	@$(MAKE) --no-print-directory open-browser
+	@if [ ! -d "$(VENV)" ]; then \
+	    echo "❗ No virtual environment found at $(VENV)"; \
+	    echo "Run this first:"; \
+	    echo "  python3 -m venv $(VENV)"; \
+	    echo "  $(VENV)/bin/pip install -r backend/requirements.txt"; \
+	    exit 1; \
+	fi
 	@echo "✅ Activating virtual environment: $(VENV)"
 	@echo "🔌 Starting LOCAL button monitor on $(MAC_SERIAL_DEVICE)"
 	@BACKEND_URL=$(BACKEND_URL) \
@@ -85,26 +95,3 @@ test:
 	cd backend && ../$(PYTHON) -m pytest ../tests/backend
 	@echo "Running frontend tests..."
 	cd frontend && npm run test
-
-# Real deployment on Linux
-linux:
-	@echo "Starting Linux deployment with direct serial mapping..."
-	COMPOSE_PROFILES="linux,mcu" docker compose up --build
-
-# Detached dev stack on Linux (with MCU profile) using an env file override
-linux-dev:
-	@if [ ! -f "$(LINUX_ENV_DEV)" ]; then \
-		echo "Missing $(LINUX_ENV_DEV). Create it with your production-like settings (e.g., R2 keys, tokens)."; \
-		exit 1; \
-	fi
-	@echo "Starting Linux dev stack with profiles: linux,mcu"
-	COMPOSE_PROFILES="linux,mcu" docker compose --env-file $(LINUX_ENV_DEV) up --build -d
-
-# Detached production stack on Linux (no MCU profile by default) using an env file override
-linux-prod:
-	@if [ ! -f "$(LINUX_ENV_PROD)" ]; then \
-		echo "Missing $(LINUX_ENV_PROD). Create it with your production secrets (e.g., R2 keys, tokens)."; \
-		exit 1; \
-	fi
-	@echo "Starting Linux production stack with profiles: linux"
-	COMPOSE_PROFILES="linux" docker compose --env-file $(LINUX_ENV_PROD) up --build -d
