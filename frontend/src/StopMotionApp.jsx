@@ -121,15 +121,19 @@ export default function StopMotionApp() {
         const camDevices = devices.filter((d) => d.kind === "videoinput");
         setCameras(camDevices);
         if (camDevices.length === 0) throw new Error("No cameras found.");
-        const target =
-          camDevices.find((c) => c.deviceId === activeCamera) ||
-          camDevices[camDevices.length - 1];
-        setActiveCamera(target.deviceId);
+        const selectedId =
+          camDevices.find((c) => c.deviceId === activeCamera)?.deviceId ||
+          camDevices[camDevices.length - 1].deviceId;
+        if (!activeCamera) {
+          // set and re-run effect to avoid double-opening streams
+          setActiveCamera(selectedId);
+          return;
+        }
 
         // 3) Open that specific device with your preferred resolution
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
-            deviceId: { exact: target.deviceId },
+            deviceId: { exact: selectedId },
             width: { ideal: 1920 },
             height: { ideal: 1080 },
           },
@@ -160,7 +164,7 @@ export default function StopMotionApp() {
       active = false;
       if (currentStream) currentStream.getTracks().forEach((t) => t.stop());
     };
-  }, []);
+  }, [activeCamera]);
 
   // --- Capture & upload ---
   const handleCapture = useCallback(async () => {
