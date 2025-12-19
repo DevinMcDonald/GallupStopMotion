@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from glob import glob
 from pathlib import Path
@@ -407,9 +408,48 @@ def serial_status():
     return {"connected": bool(dev), "device": dev}
 
 
+@app.post("/api/forwarder/heartbeat")
+def forwarder_heartbeat(
+    payload: dict = Body(...),
+    authorization: str | None = Header(default=None),
+):
+    if authorization != f"Bearer {SHARED_TOKEN}":
+        return Response(status_code=401, content="unauthorized")
+
+    FORWARDER_STATE["ts"] = time.time()
+    FORWARDER_STATE["connected"] = bool(payload.get("connected", False))
+    FORWARDER_STATE["device"] = payload.get("device")
+    FORWARDER_STATE["mode"] = payload.get("mode")
+    return {"ok": True}
+
+
+@app.get("/api/forwarder/status")
+def forwarder_status():
+    ts = float(FORWARDER_STATE.get("ts", 0.0))
+    now = time.time()
+    age = None if ts <= 0 else max(0.0, now - ts)
+    alive = bool(ts > 0 and age is not None and age <= FORWARDER_TIMEOUT)
+    connected = bool(alive and FORWARDER_STATE.get("connected", False))
+    return {
+        "connected": connected,
+        "alive": alive,
+        "age_s": age,
+        "device": FORWARDER_STATE.get("device"),
+        "mode": FORWARDER_STATE.get("mode"),
+    }
+
+
 # ----------------- Optional: physical button → browser via WebSocket -----------------
 
 SHARED_TOKEN = "super-secret-token"  # set from env in production
+FORWARDER_TIMEOUT = float(os.getenv("FORWARDER_TIMEOUT", "15"))
+
+FORWARDER_STATE = {
+    "ts": 0.0,
+    "connected": False,
+    "device": None,
+    "mode": None,
+}
 
 
 class EventBus:

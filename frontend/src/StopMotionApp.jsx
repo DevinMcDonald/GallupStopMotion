@@ -7,7 +7,7 @@ import {
   startFreshSession,
   finalizeShare,
   rotateSessionId,
-  getSerialStatus,
+  getForwarderStatus,
 } from "./lib/backend";
 
 const DEFAULT_ZOOM_CONFIG = {
@@ -470,13 +470,13 @@ export default function StopMotionApp() {
     };
   }, [handleCapture, handlePlay, handleResetAll, handleUndo]);
 
-  // --- Serial detection (dev helper) ---
+  // --- Button forwarder status (dev helper) ---
   useEffect(() => {
     let stopped = false;
     const check = async () => {
       try {
-        const status = await getSerialStatus();
-        if (!stopped) setSerialMissing(!status?.connected);
+        const status = await getForwarderStatus();
+        if (!stopped) setSerialMissing(!(status?.alive && status?.connected));
       } catch {
         if (!stopped) setSerialMissing(true);
       }
@@ -729,7 +729,7 @@ export default function StopMotionApp() {
           </div>
           {serialMissing && (
             <div className="absolute top-4 left-32 bg-amber-500/80 text-black px-3 py-1 rounded-xl text-sm shadow backdrop-blur">
-              Serial device not detected (dev fallback)
+              Serial disconnected
             </div>
           )}
 

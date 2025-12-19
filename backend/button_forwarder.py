@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import sys
+import threading
 import time
 
 import requests
@@ -16,6 +17,7 @@ last_sent: float | None = None
 
 BACKEND = os.getenv("BACKEND", "http://localhost:8000")
 TOKEN = os.getenv("TOKEN", "super-secret-token")  # keep in sync with backend
+HEARTBEAT_INTERVAL = float(os.getenv("HEARTBEAT_INTERVAL", "5"))
 
 # Map whatever your device emits to backend event types (adjust the keys as needed)
 EVENT_MAP = {
@@ -63,10 +65,38 @@ def send(evt_raw: str) -> None:
         print("[forwarder] send failed:", e, file=sys.stderr)
 
 
+def send_heartbeat(connected: bool, device: str | None, mode: str) -> None:
+    try:
+        requests.post(
+            f"{BACKEND}/api/forwarder/heartbeat",
+            json={"connected": connected, "device": device, "mode": mode},
+            headers={"Authorization": f"Bearer {TOKEN}"},
+            timeout=2,
+        )
+    except Exception as e:
+        print("[forwarder] heartbeat failed:", e, file=sys.stderr)
+
+
+def heartbeat_loop(
+    stop_evt: threading.Event, connected: bool, device: str | None, mode: str
+) -> None:
+    while not stop_evt.wait(HEARTBEAT_INTERVAL):
+        send_heartbeat(connected, device, mode)
+
+
 def main() -> None:
     monitor = None
+    stop_evt = threading.Event()
+    hb_thread: threading.Thread | None = None
     try:
         monitor = SerialDeviceMonitor(DEVICE, BAUD)
+        send_heartbeat(True, DEVICE, "serial")
+        hb_thread = threading.Thread(
+            target=heartbeat_loop,
+            args=(stop_evt, True, DEVICE, "serial"),
+            daemon=True,
+        )
+        hb_thread.start()
     except Exception as exc:
         print(
             "[forwarder] serial unavailable, falling back to keyboard (or skipping):",
@@ -75,13 +105,28 @@ def main() -> None:
         )
         if sys.stdin.isatty():
             monitor = CliMonitor()
+            send_heartbeat(False, None, "cli")
+            hb_thread = threading.Thread(
+                target=heartbeat_loop,
+                args=(stop_evt, False, None, "cli"),
+                daemon=True,
+            )
+            hb_thread.start()
         else:
+            send_heartbeat(False, None, "none")
             print("[forwarder] no TTY available; skipping button forwarding.")
             return
 
-    for evt in monitor.commands():  # e.g., CAPTURE/BTN_A/etc.
-        print("[forwarder] read event:", evt)
-        send(evt)
+    try:
+        for evt in monitor.commands():  # e.g., CAPTURE/BTN_A/etc.
+            print("[forwarder] read event:", evt)
+            send(evt)
+    except Exception as exc:
+        print("[forwarder] read loop failed:", exc, file=sys.stderr)
+    finally:
+        stop_evt.set()
+        if hb_thread:
+            hb_thread.join(timeout=2)
 
 
 if __name__ == "__main__":

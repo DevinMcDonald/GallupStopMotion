@@ -168,8 +168,8 @@ export function finalizeShareBeacon(targetSessionId = sessionId) {
   return false;
 }
 
-export async function getSerialStatus() {
-  const res = await fetch(`${API_BASE || ""}/api/serial/status`);
-  if (!res.ok) throw new Error(`Serial status failed: ${res.status}`);
-  return res.json(); // { connected, device }
+export async function getForwarderStatus() {
+  const res = await fetch(resolveUrl("/api/forwarder/status"));
+  if (!res.ok) throw new Error(`Forwarder status failed: ${res.status}`);
+  return res.json(); // { connected, alive, age_s, device, mode }
 }
