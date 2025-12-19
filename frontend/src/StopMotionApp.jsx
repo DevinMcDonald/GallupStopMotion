@@ -39,6 +39,7 @@ export default function StopMotionApp() {
   const [serialMissing, setSerialMissing] = useState(false);
   const [pendingResetConfirm, setPendingResetConfirm] = useState(false);
   const [shareOverlay, setShareOverlay] = useState(null); // { url, expiresAt, key }
+  const [isUploading, setIsUploading] = useState(false);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM_CONFIG.zoom);
   const [zoomConfig, setZoomConfig] = useState(DEFAULT_ZOOM_CONFIG);
   const [showDevHelp, setShowDevHelp] = useState(IS_DEV); // visible only in dev
@@ -169,7 +170,7 @@ export default function StopMotionApp() {
 
   // --- Capture & upload ---
   const handleCapture = useCallback(async () => {
-    if (shareOverlay) return; // dismiss first
+    if (shareOverlay || isUploading) return; // dismiss first
     bumpActivity();
     if (pendingResetConfirm) setPendingResetConfirm(false);
     setNotice("");
@@ -241,11 +242,18 @@ export default function StopMotionApp() {
     } finally {
       setIsCapturing(false);
     }
-  }, [isCapturing, frameCount, zoomConfig, shareOverlay, pendingResetConfirm]);
+  }, [
+    isCapturing,
+    frameCount,
+    zoomConfig,
+    shareOverlay,
+    pendingResetConfirm,
+    isUploading,
+  ]);
 
   // --- Undo last frame ---
   const handleUndo = useCallback(async () => {
-    if (shareOverlay) return;
+    if (shareOverlay || isUploading) return;
     bumpActivity();
     if (pendingResetConfirm) setPendingResetConfirm(false);
     setNotice("");
@@ -260,10 +268,11 @@ export default function StopMotionApp() {
     } catch (err) {
       console.warn("undo failed", err);
     }
-  }, [shareOverlay, pendingResetConfirm]);
+  }, [shareOverlay, pendingResetConfirm, isUploading]);
 
   // --- Reset all ---
   const handleResetAll = useCallback(async () => {
+    if (isUploading) return;
     if (shareOverlay) {
       setShareOverlay(null);
       setPendingResetConfirm(false);
@@ -286,8 +295,11 @@ export default function StopMotionApp() {
     setAutoplayBlocked(false);
     setThumbnails([]);
     setFrameCount(0);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    setIsUploading(true);
     try {
-      const resp = await finalizeShare();
+      const resp = await finalizeShare(undefined, { signal: controller.signal });
       const shareUrl = resp?.share?.url || resp?.url;
       if (!shareUrl) {
         setError("Share failed (no URL returned)");
@@ -301,7 +313,14 @@ export default function StopMotionApp() {
       }
     } catch (e) {
       console.warn("share on reset failed", e);
-      setError(e.message || "Share failed");
+      const msg =
+        e?.name === "AbortError"
+          ? "Upload timed out. Check your connection and try again."
+          : e.message || "Share failed";
+      setError(msg);
+    } finally {
+      clearTimeout(timeoutId);
+      setIsUploading(false);
     }
     try {
       await startFreshSession(); // clean up the closing session before rotating
@@ -316,10 +335,11 @@ export default function StopMotionApp() {
     } catch (e) {
       setError(e.message || "Reset failed");
     }
-  }, [pendingResetConfirm, shareOverlay]);
+  }, [pendingResetConfirm, shareOverlay, isUploading]);
 
   // --- Build & play (no fullscreen API) ---
   const handlePlay = useCallback(async () => {
+    if (isUploading) return;
     if (shareOverlay) {
       setShareOverlay(null);
       setPendingResetConfirm(false);
@@ -379,7 +399,7 @@ export default function StopMotionApp() {
     } finally {
       setLoadingPlayback(false);
     }
-  }, [loadingPlayback]);
+  }, [loadingPlayback, shareOverlay, pendingResetConfirm, isUploading]);
 
   // --- WebSocket subscription to backend button events ---
   useEffect(() => {
@@ -424,6 +444,10 @@ export default function StopMotionApp() {
             record("reset");
             return void handleResetAll();
           }
+          if (trimmed === "done") {
+            record("done");
+            return void handleResetAll();
+          }
           if (trimmed === "undo") {
             record("undo");
             return void handleUndo();
@@ -435,6 +459,7 @@ export default function StopMotionApp() {
           if (t === "capture") return void handleCapture();
           if (t === "play") return void handlePlay();
           if (t === "reset") return void handleResetAll();
+          if (t === "done") return void handleResetAll();
           if (t === "undo") return void handleUndo();
           if (IS_DEV) console.log("[ws] ignored message", msg);
         } catch (err) {
@@ -586,6 +611,7 @@ export default function StopMotionApp() {
         setError("");
         return;
       }
+      if (isUploading) return;
       if (e.repeat) return;
       const k = e.key.toLowerCase();
 
@@ -672,6 +698,7 @@ export default function StopMotionApp() {
     handlePlay,
     isPlaying,
     shareOverlay,
+    isUploading,
     zoom,
     cameras,
   ]);
@@ -702,6 +729,15 @@ export default function StopMotionApp() {
           </div>
           <div className="text-xs text-white/70 break-all max-w-[90vw]">
             {shareOverlay.url}
+          </div>
+        </div>
+      )}
+      {isUploading && (
+        <div className="absolute inset-0 z-50 bg-black/90 flex flex-col items-center justify-center gap-4 px-6 text-center">
+          <div className="text-3xl font-bold">Uploading...</div>
+          <div className="text-sm text-white/80 max-w-[520px]">
+            Please wait while your video uploads. This can take up to 30 seconds
+            on a slow connection.
           </div>
         </div>
       )}
@@ -739,7 +775,7 @@ export default function StopMotionApp() {
               {thumbnails.length === 0 && (
                 <div className="text-white/80 text-sm">
                   No frames yet — press{" "}
-                  <span className="font-semibold">Space</span> to capture.
+                  <span className="font-semibold">Space</span> to snap.
                 </div>
               )}
               {thumbnails.map((t) => (
@@ -759,7 +795,7 @@ export default function StopMotionApp() {
                 <div className="font-semibold mb-1">Dev Controls</div>
                 <div>
                   <span className="font-mono">Space</span> or{" "}
-                  <span className="font-mono">C</span> — Capture
+                  <span className="font-mono">C</span> — Snap
                 </div>
                 <div>
                   <span className="font-mono">Z</span> or{" "}

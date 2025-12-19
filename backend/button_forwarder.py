@@ -24,10 +24,16 @@ EVENT_MAP = {
     "capture": "capture",
     "play": "play",
     "reset": "reset",
+    "undo": "undo",
+    "snap": "capture",
+    "done": "done",
     # examples of common variants
     "CAPTURE": "capture",
     "PLAY": "play",
     "RESET": "reset",
+    "UNDO": "undo",
+    "SNAP": "capture",
+    "DONE": "done",
     "BTN_A": "capture",
     "BTN_B": "play",
     "BTN_C": "reset",
@@ -46,7 +52,7 @@ def send(evt_raw: str) -> None:
         return
 
     etype = EVENT_MAP.get(evt_raw, evt_raw).lower()
-    if etype not in {"capture", "play", "reset"}:
+    if etype not in {"capture", "play", "reset", "undo", "done"}:
         print(f"[forwarder] ignoring unknown event: {evt_raw!r} -> {etype!r}")
         return
     try:

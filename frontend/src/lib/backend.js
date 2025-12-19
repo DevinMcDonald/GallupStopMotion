@@ -126,11 +126,15 @@ export async function startFreshSession(targetSessionId = sessionId) {
 }
 
 // Build + upload the current (or provided) session to R2.
-export async function finalizeShare(targetSessionId = sessionId) {
+export async function finalizeShare(
+  targetSessionId = sessionId,
+  options = {},
+) {
   const res = await fetch(withSession("/api/session/share", targetSessionId), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     keepalive: true,
+    signal: options.signal,
   });
   if (import.meta.env.DEV) {
     console.log("[share] finalize", targetSessionId, res.status);

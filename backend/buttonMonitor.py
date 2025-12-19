@@ -70,9 +70,10 @@ class SerialDeviceMonitor(InputMonitor):
     BUTTON_MAP: dict[str, str] = {
         "c": "snap",
         "p": "play",
-        "r": "restart",
+        "u": "undo",
+        "d": "done",
     }
-    BUTTONS: set[str] = {"play", "capture", "reset", "undo", "save"}
+    BUTTONS: set[str] = {"snap", "play", "undo", "done", "capture", "reset", "save"}
 
     # Adjust the port name to your Arduino's (e.g. "COM3" on Windows, "/dev/ttyACM0" or "/dev/ttyUSB0" on Linux/Mac)
     def __init__(self, deviceName: str | None = None, baudRate: int = 115200):

@@ -505,7 +505,7 @@ async def button_event(
         return Response(status_code=401, content="unauthorized")
 
     etype = event.get("type")
-    if etype not in {"capture", "play", "reset"}:
+    if etype not in {"capture", "play", "reset", "undo", "done"}:
         return Response(status_code=400, content="bad type")
 
     await bus.broadcast({"type": etype})

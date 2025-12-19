@@ -11,14 +11,14 @@ COMPOSE ?= docker compose
 
 # Prefer a Chrome/Chromium/Arc/Firefox kiosk-style launch; fall back to open/xdg-open.
 BROWSER_CMD ?= $(shell \
-	if command -v google-chrome >/dev/null 2>&1; then \
+	if command -v firefox >/dev/null 2>&1; then \
+		echo "firefox --kiosk $(BROWSER_URL)"; \
+	elif command -v google-chrome >/dev/null 2>&1; then \
 		echo "google-chrome --start-fullscreen --app=$(BROWSER_URL)"; \
 	elif command -v chromium-browser >/dev/null 2>&1; then \
 		echo "chromium-browser --start-fullscreen --app=$(BROWSER_URL)"; \
 	elif command -v chromium >/dev/null 2>&1; then \
 		echo "chromium --start-fullscreen --app=$(BROWSER_URL)"; \
-	elif command -v firefox >/dev/null 2>&1; then \
-		echo "firefox --kiosk $(BROWSER_URL)"; \
 	elif command -v open >/dev/null 2>&1; then \
 		if [ -x "/Applications/Safari.app/Contents/MacOS/Safari" ]; then \
 			echo "open -a \"Safari\" $(BROWSER_URL)"; \
