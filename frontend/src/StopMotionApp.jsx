@@ -775,7 +775,7 @@ export default function StopMotionApp() {
               {thumbnails.length === 0 && (
                 <div className="text-white/80 text-sm">
                   No frames yet — press{" "}
-                  <span className="font-semibold">Space</span> to snap.
+                  <span className="font-semibold">Snap</span> to get started
                 </div>
               )}
               {thumbnails.map((t) => (
