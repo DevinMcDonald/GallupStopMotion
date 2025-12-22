@@ -1,22 +1,24 @@
 # Adjust if your device name changes:
-MAC_SERIAL_DEVICE = /dev/tty.usbmodem1201
+# Default to Linux ttyACM0, macOS usbmodem otherwise.
+MAC_SERIAL_DEVICE = $(shell if [ "$$(uname -s)" = "Linux" ]; then echo /dev/ttyACM0; else echo /dev/tty.usbmodem1201; fi)
 BACKEND_URL = http://localhost:8000
 SERIAL_BAUD = 115200
 BROWSER_URL ?= http://localhost:5173
 
 VENV = venv
 PYTHON = $(VENV)/bin/python3
+COMPOSE ?= docker compose
 
 # Prefer a Chrome/Chromium/Arc/Firefox kiosk-style launch; fall back to open/xdg-open.
 BROWSER_CMD ?= $(shell \
-	if command -v google-chrome >/dev/null 2>&1; then \
+	if command -v firefox >/dev/null 2>&1; then \
+		echo "firefox --kiosk $(BROWSER_URL)"; \
+	elif command -v google-chrome >/dev/null 2>&1; then \
 		echo "google-chrome --start-fullscreen --app=$(BROWSER_URL)"; \
 	elif command -v chromium-browser >/dev/null 2>&1; then \
 		echo "chromium-browser --start-fullscreen --app=$(BROWSER_URL)"; \
 	elif command -v chromium >/dev/null 2>&1; then \
 		echo "chromium --start-fullscreen --app=$(BROWSER_URL)"; \
-	elif command -v firefox >/dev/null 2>&1; then \
-		echo "firefox --kiosk $(BROWSER_URL)"; \
 	elif command -v open >/dev/null 2>&1; then \
 		if [ -x "/Applications/Safari.app/Contents/MacOS/Safari" ]; then \
 			echo "open -a \"Safari\" $(BROWSER_URL)"; \
@@ -41,7 +43,7 @@ open-browser:
 # Start backend + frontend normally in Docker
 dev:
 	@echo "Starting dev stack (frontend=dev)..."
-	FRONTEND_MODE=dev NODE_ENV=development docker compose up --build -d
+	FRONTEND_MODE=dev NODE_ENV=development $(COMPOSE) up --build -d
 	@echo "Waiting for backend service to come up..."
 	sleep 3
 	@$(MAKE) --no-print-directory open-browser
@@ -55,14 +57,14 @@ dev:
 	@echo "✅ Activating virtual environment: $(VENV)"
 	@echo "🔌 Starting LOCAL button monitor on $(MAC_SERIAL_DEVICE)"
 	@BACKEND_URL=$(BACKEND_URL) \
-	 SERIAL_PORT=$(MAC_SERIAL_DEVICE) \
+	 INPUT_DEVICE=$(MAC_SERIAL_DEVICE) \
 	 SERIAL_BAUD=$(SERIAL_BAUD) \
 	 /bin/bash -c "source $(VENV)/bin/activate && python3 -u backend/button_forwarder.py"
 	@$(MAKE) --no-print-directory open-browser
 
 prod:
 	@echo "Starting prod stack (frontend=prod)..."
-	FRONTEND_MODE=prod NODE_ENV=production docker compose up --build -d
+	FRONTEND_MODE=prod NODE_ENV=production $(COMPOSE) up --build -d
 	@echo "Waiting for backend service to come up..."
 	sleep 3
 	@$(MAKE) --no-print-directory open-browser
@@ -76,14 +78,14 @@ prod:
 	@echo "✅ Activating virtual environment: $(VENV)"
 	@echo "🔌 Starting LOCAL button monitor on $(MAC_SERIAL_DEVICE)"
 	@BACKEND_URL=$(BACKEND_URL) \
-	 SERIAL_PORT=$(MAC_SERIAL_DEVICE) \
+	 INPUT_DEVICE=$(MAC_SERIAL_DEVICE) \
 	 SERIAL_BAUD=$(SERIAL_BAUD) \
 	 /bin/bash -c "source $(VENV)/bin/activate && python3 -u backend/button_forwarder.py"
 	@$(MAKE) --no-print-directory open-browser
 
 stop:
 	@echo "Stopping containers..."
-	docker compose down
+	$(COMPOSE) down
 
 test:
 	@echo "Running backend tests..."

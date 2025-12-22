@@ -19,9 +19,6 @@
   Prereqs: Docker, Node 20+, Python 3.10+, `python3 -m venv`, npm.
 
   ```bash
-  # install frontend deps once
-  cd frontend && npm install && cd ..
-
   # run everything (frontend dev mode, button forwarder)
   make dev
   ```
@@ -79,20 +76,6 @@
   - Backend cap `MAX_FRAMES` (default 240) returns 429 when exceeded.
   - Frontend warns at 90% of the cap and blocks at the limit.
 
-  ## Demo Video
-
-  To embed your demo on GitHub, add a link or a thumbnail image that links to the video. Example:
-
-  ```markdown
-  ## Demo
-
-  [![Demo video thumbnail](demo-thumbnail.png)](https://your.video.url "Watch the demo")
-
-  ```
-
-  - Upload `demo-thumbnail.png` to the repo (or use an external image URL).
-  - Replace `https://your.video.url` with your video link (YouTube, Vimeo, etc.).
-
   ## Scripts & Targets
 
   - `make dev` — start dev stack (frontend dev, backend, button forwarder, open browser)
@@ -104,7 +87,3 @@
 
   - Frontend prod build is triggered by `FRONTEND_MODE=prod` (set in make).
   - Compose profiles for MCU/serial are defined in `docker-compose.yml` and will run cross-platform; adjust device mapping if needed.
-
-  ## License
-
-  [MIT] or your preferred license.

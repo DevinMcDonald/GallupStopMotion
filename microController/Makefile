@@ -16,7 +16,6 @@ BAUD ?= 115200
 .PHONY: compile setup detect  upload monitor run clean
 
 compile:
-	@clear
 	arduino-cli compile --fqbn $(FQBN) $(SKETCH)
 
 setup:

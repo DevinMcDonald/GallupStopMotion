@@ -7,7 +7,7 @@ import {
   startFreshSession,
   finalizeShare,
   rotateSessionId,
-  getSerialStatus,
+  getForwarderStatus,
 } from "./lib/backend";
 
 const DEFAULT_ZOOM_CONFIG = {
@@ -40,6 +40,7 @@ export default function StopMotionApp() {
   const [serialMissing, setSerialMissing] = useState(false);
   const [pendingResetConfirm, setPendingResetConfirm] = useState(false);
   const [shareOverlay, setShareOverlay] = useState(null); // { url, expiresAt, key }
+  const [isUploading, setIsUploading] = useState(false);
   const [zoom, setZoom] = useState(DEFAULT_ZOOM_CONFIG.zoom);
   const [zoomConfig, setZoomConfig] = useState(DEFAULT_ZOOM_CONFIG);
   const [showDevHelp, setShowDevHelp] = useState(IS_DEV); // visible only in dev
@@ -47,6 +48,14 @@ export default function StopMotionApp() {
   const [cameras, setCameras] = useState([]);
   const [activeCamera, setActiveCamera] = useState(null);
   const [lastActivity, setLastActivity] = useState(Date.now());
+  const [cameraEpoch, setCameraEpoch] = useState(0);
+  const [cameraReconnect, setCameraReconnect] = useState(false);
+  const [buttonsReconnected, setButtonsReconnected] = useState(false);
+  const lastForwarderConnected = useRef(null);
+  const cameraRetryTimer = useRef(null);
+  const cameraOpening = useRef(false);
+  const cameraNeedsReload = useRef(false);
+  const cameraRetryCount = useRef(0);
 
   // Inactivity timings (tunable; shortened defaults for testing)
   const WARN_MS = 120_000;
@@ -189,12 +198,38 @@ export default function StopMotionApp() {
     loadSfx();
   }, [loadSfx]);
 
+  const scheduleCameraRetry = useCallback((delayMs = 1000) => {
+    setCameraReconnect(true);
+    if (cameraRetryTimer.current) {
+      clearTimeout(cameraRetryTimer.current);
+    }
+    cameraRetryTimer.current = setTimeout(() => {
+      setCameraEpoch((e) => e + 1);
+    }, delayMs);
+  }, []);
+
+  const resetCameraVideo = useCallback(() => {
+    if (!videoRef.current) return;
+    try {
+      const stream = videoRef.current.srcObject;
+      if (stream && typeof stream.getTracks === "function") {
+        stream.getTracks().forEach((t) => t.stop());
+      }
+    } catch {}
+    try {
+      videoRef.current.pause();
+    } catch {}
+    videoRef.current.srcObject = null;
+  }, []);
+
   // --- Webcam background ---
   useEffect(() => {
     let active = true;
     let currentStream;
 
     (async () => {
+      if (cameraOpening.current) return;
+      cameraOpening.current = true;
       try {
         // 1) Prime permissions so device labels are available in some browsers
         await navigator.mediaDevices.getUserMedia({
@@ -215,6 +250,10 @@ export default function StopMotionApp() {
           setActiveCamera(selectedId);
           return;
         }
+        if (activeCamera !== selectedId) {
+          setActiveCamera(selectedId);
+          return;
+        }
 
         // 3) Open that specific device with your preferred resolution
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -232,16 +271,48 @@ export default function StopMotionApp() {
         }
 
         currentStream = stream;
+        stream.getVideoTracks().forEach((track) => {
+          track.onended = () => {
+            if (!active) return;
+            setStreamReady(false);
+            cameraNeedsReload.current = true;
+            resetCameraVideo();
+            cameraRetryCount.current = 0;
+            scheduleCameraRetry(1000);
+            cameraNeedsReload.current = true;
+          };
+        });
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           await videoRef.current.play();
           setStreamReady(true);
+          setCameraReconnect(false);
+          cameraRetryCount.current = 0;
+          if (cameraNeedsReload.current) {
+            window.location.reload();
+            return;
+          }
         }
       } catch (err) {
         console.error(err);
+        setStreamReady(false);
+        setCameraReconnect(true);
         setError(
           "Unable to access the external camera. Check permissions and connections.",
         );
+        resetCameraVideo();
+        cameraNeedsReload.current = true;
+        cameraRetryCount.current += 1;
+        const backoff = Math.min(8000, 1000 * 2 ** (cameraRetryCount.current - 1));
+        scheduleCameraRetry(backoff);
+        if (cameraRetryCount.current >= 6) {
+          // ~1+2+4+8+8+8s => ~31s, force a fresh start
+          window.location.reload();
+          return;
+        }
+        cameraNeedsReload.current = true;
+      } finally {
+        cameraOpening.current = false;
       }
     })();
 
@@ -250,11 +321,39 @@ export default function StopMotionApp() {
       active = false;
       if (currentStream) currentStream.getTracks().forEach((t) => t.stop());
     };
-  }, [activeCamera]);
+  }, [activeCamera, cameraEpoch, scheduleCameraRetry, resetCameraVideo]);
+
+  // Reconnect camera after resume/unlock
+  useEffect(() => {
+    const kick = () => {
+      setStreamReady(false);
+      setCameraReconnect(true);
+      setCameraEpoch((e) => e + 1);
+    };
+    const onVis = () => {
+      if (document.visibilityState === "visible") kick();
+    };
+    window.addEventListener("focus", kick);
+    document.addEventListener("visibilitychange", onVis);
+    navigator.mediaDevices?.addEventListener?.("devicechange", kick);
+    return () => {
+      window.removeEventListener("focus", kick);
+      document.removeEventListener("visibilitychange", onVis);
+      navigator.mediaDevices?.removeEventListener?.("devicechange", kick);
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (cameraRetryTimer.current) {
+        clearTimeout(cameraRetryTimer.current);
+      }
+    };
+  }, []);
 
   // --- Capture & upload ---
   const handleCapture = useCallback(async () => {
-    if (shareOverlay) return; // dismiss first
+    if (shareOverlay || isUploading) return; // dismiss first
     bumpActivity();
     if (pendingResetConfirm) setPendingResetConfirm(false);
     setNotice("");
@@ -334,11 +433,12 @@ export default function StopMotionApp() {
     shareOverlay,
     pendingResetConfirm,
     playSfx,
+    isUploading,
   ]);
 
   // --- Undo last frame ---
   const handleUndo = useCallback(async () => {
-    if (shareOverlay) return;
+    if (shareOverlay || isUploading) return;
     bumpActivity();
     if (pendingResetConfirm) setPendingResetConfirm(false);
     setNotice("");
@@ -354,10 +454,11 @@ export default function StopMotionApp() {
     } catch (err) {
       console.warn("undo failed", err);
     }
-  }, [shareOverlay, pendingResetConfirm, playSfx]);
+  }, [shareOverlay, pendingResetConfirm, isUploading, playSfx]);
 
   // --- Reset all ---
   const handleResetAll = useCallback(async () => {
+    if (isUploading) return;
     if (shareOverlay) {
       setShareOverlay(null);
       setPendingResetConfirm(false);
@@ -382,8 +483,11 @@ export default function StopMotionApp() {
     setThumbnails([]);
     setFrameCount(0);
     playSfx("done");
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    setIsUploading(true);
     try {
-      const resp = await finalizeShare();
+      const resp = await finalizeShare(undefined, { signal: controller.signal });
       const shareUrl = resp?.share?.url || resp?.url;
       if (!shareUrl) {
         setError("Share failed (no URL returned)");
@@ -397,7 +501,14 @@ export default function StopMotionApp() {
       }
     } catch (e) {
       console.warn("share on reset failed", e);
-      setError(e.message || "Share failed");
+      const msg =
+        e?.name === "AbortError"
+          ? "Upload timed out. Check your connection and try again."
+          : e.message || "Share failed";
+      setError(msg);
+    } finally {
+      clearTimeout(timeoutId);
+      setIsUploading(false);
     }
     try {
       await startFreshSession(); // clean up the closing session before rotating
@@ -412,10 +523,11 @@ export default function StopMotionApp() {
     } catch (e) {
       setError(e.message || "Reset failed");
     }
-  }, [pendingResetConfirm, shareOverlay, playSfx]);
+  }, [pendingResetConfirm, shareOverlay, isUploading, playSfx]);
 
   // --- Build & play (no fullscreen API) ---
   const handlePlay = useCallback(async () => {
+    if (isUploading) return;
     if (shareOverlay) {
       setShareOverlay(null);
       setPendingResetConfirm(false);
@@ -476,7 +588,7 @@ export default function StopMotionApp() {
     } finally {
       setLoadingPlayback(false);
     }
-  }, [loadingPlayback, playSfx]);
+  }, [loadingPlayback, shareOverlay, pendingResetConfirm, isUploading, playSfx]);
 
   // --- WebSocket subscription to backend button events ---
   useEffect(() => {
@@ -509,6 +621,15 @@ export default function StopMotionApp() {
           const trimmed = raw.trim().toLowerCase();
           const record = (t) => setWsInfo((p) => ({ ...p, last: t }));
 
+          if (shareOverlay) {
+            setShareOverlay(null);
+            setPendingResetConfirm(false);
+            setError("");
+            setNotice("");
+            record("dismiss-share");
+            return;
+          }
+
           if (trimmed === "capture") {
             record("capture");
             return void handleCapture();
@@ -519,6 +640,10 @@ export default function StopMotionApp() {
           }
           if (trimmed === "reset") {
             record("reset");
+            return void handleResetAll();
+          }
+          if (trimmed === "done") {
+            record("done");
             return void handleResetAll();
           }
           if (trimmed === "undo") {
@@ -532,6 +657,7 @@ export default function StopMotionApp() {
           if (t === "capture") return void handleCapture();
           if (t === "play") return void handlePlay();
           if (t === "reset") return void handleResetAll();
+          if (t === "done") return void handleResetAll();
           if (t === "undo") return void handleUndo();
           if (IS_DEV) console.log("[ws] ignored message", msg);
         } catch (err) {
@@ -567,15 +693,27 @@ export default function StopMotionApp() {
     };
   }, [handleCapture, handlePlay, handleResetAll, handleUndo]);
 
-  // --- Serial detection (dev helper) ---
+  // --- Button forwarder status (dev helper) ---
   useEffect(() => {
     let stopped = false;
+    let reconnectTimer;
     const check = async () => {
       try {
-        const status = await getSerialStatus();
-        if (!stopped) setSerialMissing(!status?.connected);
+        const status = await getForwarderStatus();
+        const connected = Boolean(status?.alive && status?.connected);
+        if (!stopped) setSerialMissing(!connected);
+        if (lastForwarderConnected.current === false && connected && !stopped) {
+          setButtonsReconnected(true);
+          if (reconnectTimer) clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(
+            () => setButtonsReconnected(false),
+            5000,
+          );
+        }
+        lastForwarderConnected.current = connected;
       } catch {
         if (!stopped) setSerialMissing(true);
+        lastForwarderConnected.current = false;
       }
     };
     check();
@@ -583,6 +721,7 @@ export default function StopMotionApp() {
     return () => {
       stopped = true;
       clearInterval(id);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
     };
   }, []);
 
@@ -681,8 +820,10 @@ export default function StopMotionApp() {
         setShareOverlay(null);
         setPendingResetConfirm(false);
         setError("");
+        setNotice("");
         return;
       }
+      if (isUploading) return;
       if (e.repeat) return;
       const k = e.key.toLowerCase();
 
@@ -769,6 +910,7 @@ export default function StopMotionApp() {
     handlePlay,
     isPlaying,
     shareOverlay,
+    isUploading,
     zoom,
     cameras,
   ]);
@@ -802,6 +944,15 @@ export default function StopMotionApp() {
           </div>
         </div>
       )}
+      {isUploading && (
+        <div className="absolute inset-0 z-50 bg-black/90 flex flex-col items-center justify-center gap-4 px-6 text-center">
+          <div className="text-3xl font-bold">Uploading...</div>
+          <div className="text-sm text-white/80 max-w-[520px]">
+            Please wait while your video uploads. This can take up to 30 seconds
+            on a slow connection.
+          </div>
+        </div>
+      )}
 
       {/* Live camera background */}
       <video
@@ -822,23 +973,34 @@ export default function StopMotionApp() {
       {!isPlaying && (
         <>
           <div className="absolute top-4 left-4 bg-black/60 px-3 py-1 rounded-xl text-sm backdrop-blur">
-            {streamReady ? "Live" : "Starting Camera..."}
+            {streamReady
+              ? "Live"
+              : cameraReconnect
+                ? "Reconnecting camera..."
+                : "Starting Camera..."}
           </div>
           {serialMissing && (
             <div className="absolute top-4 left-32 bg-amber-500/80 text-black px-3 py-1 rounded-xl text-sm shadow backdrop-blur">
-              Serial device not detected (dev fallback)
+              Buttons disconnected — reconnecting...
+            </div>
+          )}
+          {!serialMissing && buttonsReconnected && (
+            <div className="absolute top-4 left-32 bg-emerald-400/80 text-black px-3 py-1 rounded-xl text-sm shadow backdrop-blur">
+              Buttons reconnected
+            </div>
+          )}
+          {thumbnails.length === 0 && (
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <div className="bg-teal-500/85 text-black text-center px-6 py-4 rounded-2xl text-2xl md:text-3xl font-semibold shadow-lg backdrop-blur">
+                Press <span className="font-bold">Snap</span> to get started!
+              </div>
             </div>
           )}
 
           {/* Film roll in lower third */}
           <div className="absolute bottom-0 w-full bg-gradient-to-t from-black/70 to-transparent p-4 flex items-end">
             <div className="flex overflow-x-auto gap-3 flex-1">
-              {thumbnails.length === 0 && (
-                <div className="text-white/80 text-sm">
-                  No frames yet — press{" "}
-                  <span className="font-semibold">Space</span> to capture.
-                </div>
-              )}
+              {thumbnails.length === 0 && <div className="h-28 w-full" />}
               {thumbnails.map((t) => (
                 <img
                   key={t.id}
@@ -856,7 +1018,7 @@ export default function StopMotionApp() {
                 <div className="font-semibold mb-1">Dev Controls</div>
                 <div>
                   <span className="font-mono">Space</span> or{" "}
-                  <span className="font-mono">C</span> — Capture
+                  <span className="font-mono">C</span> — Snap
                 </div>
                 <div>
                   <span className="font-mono">Z</span> or{" "}

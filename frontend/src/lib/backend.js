@@ -126,11 +126,15 @@ export async function startFreshSession(targetSessionId = sessionId) {
 }
 
 // Build + upload the current (or provided) session to R2.
-export async function finalizeShare(targetSessionId = sessionId) {
+export async function finalizeShare(
+  targetSessionId = sessionId,
+  options = {},
+) {
   const res = await fetch(withSession("/api/session/share", targetSessionId), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     keepalive: true,
+    signal: options.signal,
   });
   if (import.meta.env.DEV) {
     console.log("[share] finalize", targetSessionId, res.status);
@@ -168,8 +172,8 @@ export function finalizeShareBeacon(targetSessionId = sessionId) {
   return false;
 }
 
-export async function getSerialStatus() {
-  const res = await fetch(`${API_BASE || ""}/api/serial/status`);
-  if (!res.ok) throw new Error(`Serial status failed: ${res.status}`);
-  return res.json(); // { connected, device }
+export async function getForwarderStatus() {
+  const res = await fetch(resolveUrl("/api/forwarder/status"));
+  if (!res.ok) throw new Error(`Forwarder status failed: ${res.status}`);
+  return res.json(); // { connected, alive, age_s, device, mode }
 }

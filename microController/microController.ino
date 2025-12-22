@@ -1,5 +1,5 @@
-// ButtonsFive.ino
-// Five buttons on D2..D6 using internal pull-ups.
+// ButtonsFour.ino
+// Four buttons on D2..D5 using internal pull-ups.
 // Pressed = LOW; idle = HIGH. Debounced edge-detect prints one command per press.
 
 struct Button {
@@ -11,15 +11,14 @@ struct Button {
   bool lastRaw;            // last raw (immediate) read
 };
 
-constexpr uint8_t BTN_COUNT = 5;
+constexpr uint8_t BTN_COUNT = 4;
 constexpr unsigned long DEBOUNCE_MS = 25; // good starting point for typical kits
 
 Button buttons[BTN_COUNT] = {
-  {2, "capture", true, true, 0, true},
-  {3, "play",    true, true, 0, true},
-  {4, "undo",    true, true, 0, true},
-  {5, "reset",   true, true, 0, true},
-  {6, "save",    true, true, 0, true}
+  {2, "snap", true, true, 0, true},
+  {3, "play", true, true, 0, true},
+  {4, "undo", true, true, 0, true},
+  {5, "done", true, true, 0, true}
 };
 
 void setup() {
