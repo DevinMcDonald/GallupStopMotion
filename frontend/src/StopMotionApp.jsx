@@ -51,6 +51,10 @@ export default function StopMotionApp() {
   const [cameraReconnect, setCameraReconnect] = useState(false);
   const [buttonsReconnected, setButtonsReconnected] = useState(false);
   const lastForwarderConnected = useRef(null);
+  const cameraRetryTimer = useRef(null);
+  const cameraOpening = useRef(false);
+  const cameraNeedsReload = useRef(false);
+  const cameraRetryCount = useRef(0);
 
   // Inactivity timings (tunable; shortened defaults for testing)
   const WARN_MS = 120_000;
@@ -109,12 +113,38 @@ export default function StopMotionApp() {
     };
   }, [activeCamera]);
 
+  const scheduleCameraRetry = useCallback((delayMs = 1000) => {
+    setCameraReconnect(true);
+    if (cameraRetryTimer.current) {
+      clearTimeout(cameraRetryTimer.current);
+    }
+    cameraRetryTimer.current = setTimeout(() => {
+      setCameraEpoch((e) => e + 1);
+    }, delayMs);
+  }, []);
+
+  const resetCameraVideo = useCallback(() => {
+    if (!videoRef.current) return;
+    try {
+      const stream = videoRef.current.srcObject;
+      if (stream && typeof stream.getTracks === "function") {
+        stream.getTracks().forEach((t) => t.stop());
+      }
+    } catch {}
+    try {
+      videoRef.current.pause();
+    } catch {}
+    videoRef.current.srcObject = null;
+  }, []);
+
   // --- Webcam background ---
   useEffect(() => {
     let active = true;
     let currentStream;
 
     (async () => {
+      if (cameraOpening.current) return;
+      cameraOpening.current = true;
       try {
         // 1) Prime permissions so device labels are available in some browsers
         await navigator.mediaDevices.getUserMedia({
@@ -132,6 +162,10 @@ export default function StopMotionApp() {
           camDevices[camDevices.length - 1].deviceId;
         if (!activeCamera) {
           // set and re-run effect to avoid double-opening streams
+          setActiveCamera(selectedId);
+          return;
+        }
+        if (activeCamera !== selectedId) {
           setActiveCamera(selectedId);
           return;
         }
@@ -156,8 +190,11 @@ export default function StopMotionApp() {
           track.onended = () => {
             if (!active) return;
             setStreamReady(false);
-            setCameraReconnect(true);
-            setTimeout(() => setCameraEpoch((e) => e + 1), 500);
+            cameraNeedsReload.current = true;
+            resetCameraVideo();
+            cameraRetryCount.current = 0;
+            scheduleCameraRetry(1000);
+            cameraNeedsReload.current = true;
           };
         });
         if (videoRef.current) {
@@ -165,6 +202,11 @@ export default function StopMotionApp() {
           await videoRef.current.play();
           setStreamReady(true);
           setCameraReconnect(false);
+          cameraRetryCount.current = 0;
+          if (cameraNeedsReload.current) {
+            window.location.reload();
+            return;
+          }
         }
       } catch (err) {
         console.error(err);
@@ -173,6 +215,19 @@ export default function StopMotionApp() {
         setError(
           "Unable to access the external camera. Check permissions and connections.",
         );
+        resetCameraVideo();
+        cameraNeedsReload.current = true;
+        cameraRetryCount.current += 1;
+        const backoff = Math.min(8000, 1000 * 2 ** (cameraRetryCount.current - 1));
+        scheduleCameraRetry(backoff);
+        if (cameraRetryCount.current >= 6) {
+          // ~1+2+4+8+8+8s => ~31s, force a fresh start
+          window.location.reload();
+          return;
+        }
+        cameraNeedsReload.current = true;
+      } finally {
+        cameraOpening.current = false;
       }
     })();
 
@@ -181,7 +236,7 @@ export default function StopMotionApp() {
       active = false;
       if (currentStream) currentStream.getTracks().forEach((t) => t.stop());
     };
-  }, [activeCamera, cameraEpoch]);
+  }, [activeCamera, cameraEpoch, scheduleCameraRetry, resetCameraVideo]);
 
   // Reconnect camera after resume/unlock
   useEffect(() => {
@@ -195,9 +250,19 @@ export default function StopMotionApp() {
     };
     window.addEventListener("focus", kick);
     document.addEventListener("visibilitychange", onVis);
+    navigator.mediaDevices?.addEventListener?.("devicechange", kick);
     return () => {
       window.removeEventListener("focus", kick);
       document.removeEventListener("visibilitychange", onVis);
+      navigator.mediaDevices?.removeEventListener?.("devicechange", kick);
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (cameraRetryTimer.current) {
+        clearTimeout(cameraRetryTimer.current);
+      }
     };
   }, []);
 
