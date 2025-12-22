@@ -7,9 +7,9 @@ import time
 import requests
 from buttonMonitor import (
     BAUD,
-    DEVICE,
     CliMonitor,
     SerialDeviceMonitor,
+    resolve_device,
 )  # your serial reader
 
 BUTTON_MIN_INTERVAL = float(os.getenv("BUTTON_MIN_INTERVAL", "1.0"))
@@ -18,6 +18,8 @@ last_sent: float | None = None
 BACKEND = os.getenv("BACKEND", "http://localhost:8000")
 TOKEN = os.getenv("TOKEN", "super-secret-token")  # keep in sync with backend
 HEARTBEAT_INTERVAL = float(os.getenv("HEARTBEAT_INTERVAL", "5"))
+SERIAL_RETRY_SEC = float(os.getenv("SERIAL_RETRY_SEC", "2"))
+ALLOW_CLI = os.getenv("ALLOW_CLI", "1") == "1"
 
 # Map whatever your device emits to backend event types (adjust the keys as needed)
 EVENT_MAP = {
@@ -90,49 +92,63 @@ def heartbeat_loop(
         send_heartbeat(connected, device, mode)
 
 
-def main() -> None:
-    monitor = None
-    stop_evt = threading.Event()
-    hb_thread: threading.Thread | None = None
-    try:
-        monitor = SerialDeviceMonitor(DEVICE, BAUD)
-        send_heartbeat(True, DEVICE, "serial")
-        hb_thread = threading.Thread(
-            target=heartbeat_loop,
-            args=(stop_evt, True, DEVICE, "serial"),
-            daemon=True,
-        )
-        hb_thread.start()
-    except Exception as exc:
-        print(
-            "[forwarder] serial unavailable, falling back to keyboard (or skipping):",
-            exc,
-            file=sys.stderr,
-        )
-        if sys.stdin.isatty():
-            monitor = CliMonitor()
-            send_heartbeat(False, None, "cli")
-            hb_thread = threading.Thread(
-                target=heartbeat_loop,
-                args=(stop_evt, False, None, "cli"),
-                daemon=True,
-            )
-            hb_thread.start()
-        else:
-            send_heartbeat(False, None, "none")
-            print("[forwarder] no TTY available; skipping button forwarding.")
-            return
+def start_heartbeat(
+    stop_evt: threading.Event, connected: bool, device: str | None, mode: str
+) -> threading.Thread:
+    send_heartbeat(connected, device, mode)
+    t = threading.Thread(
+        target=heartbeat_loop,
+        args=(stop_evt, connected, device, mode),
+        daemon=True,
+    )
+    t.start()
+    return t
 
-    try:
-        for evt in monitor.commands():  # e.g., CAPTURE/BTN_A/etc.
-            print("[forwarder] read event:", evt)
-            send(evt)
-    except Exception as exc:
-        print("[forwarder] read loop failed:", exc, file=sys.stderr)
-    finally:
-        stop_evt.set()
-        if hb_thread:
-            hb_thread.join(timeout=2)
+
+def run_serial_loop() -> None:
+    while True:
+        device = os.getenv("INPUT_DEVICE") or resolve_device()
+        if not device:
+            if ALLOW_CLI and sys.stdin.isatty():
+                stop_evt = threading.Event()
+                hb_thread = start_heartbeat(stop_evt, False, None, "cli")
+                try:
+                    monitor = CliMonitor()
+                    for evt in monitor.commands():
+                        print("[forwarder] read event:", evt)
+                        send(evt)
+                finally:
+                    stop_evt.set()
+                    hb_thread.join(timeout=2)
+            else:
+                send_heartbeat(False, None, "none")
+                print("[forwarder] no serial device; waiting to retry.")
+                time.sleep(SERIAL_RETRY_SEC)
+            continue
+
+        stop_evt = threading.Event()
+        hb_thread: threading.Thread | None = None
+        try:
+            monitor = SerialDeviceMonitor(device, BAUD)
+            hb_thread = start_heartbeat(stop_evt, True, device, "serial")
+            for evt in monitor.commands():  # e.g., SNAP/PLAY/etc.
+                print("[forwarder] read event:", evt)
+                send(evt)
+        except Exception as exc:
+            print("[forwarder] serial read failed:", exc, file=sys.stderr)
+        finally:
+            stop_evt.set()
+            if hb_thread:
+                hb_thread.join(timeout=2)
+            try:
+                monitor.serial.close()
+            except Exception:
+                pass
+            time.sleep(SERIAL_RETRY_SEC)
+
+
+def main() -> None:
+    run_serial_loop()
 
 
 if __name__ == "__main__":

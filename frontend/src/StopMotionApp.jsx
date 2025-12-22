@@ -47,6 +47,10 @@ export default function StopMotionApp() {
   const [cameras, setCameras] = useState([]);
   const [activeCamera, setActiveCamera] = useState(null);
   const [lastActivity, setLastActivity] = useState(Date.now());
+  const [cameraEpoch, setCameraEpoch] = useState(0);
+  const [cameraReconnect, setCameraReconnect] = useState(false);
+  const [buttonsReconnected, setButtonsReconnected] = useState(false);
+  const lastForwarderConnected = useRef(null);
 
   // Inactivity timings (tunable; shortened defaults for testing)
   const WARN_MS = 120_000;
@@ -148,13 +152,24 @@ export default function StopMotionApp() {
         }
 
         currentStream = stream;
+        stream.getVideoTracks().forEach((track) => {
+          track.onended = () => {
+            if (!active) return;
+            setStreamReady(false);
+            setCameraReconnect(true);
+            setTimeout(() => setCameraEpoch((e) => e + 1), 500);
+          };
+        });
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           await videoRef.current.play();
           setStreamReady(true);
+          setCameraReconnect(false);
         }
       } catch (err) {
         console.error(err);
+        setStreamReady(false);
+        setCameraReconnect(true);
         setError(
           "Unable to access the external camera. Check permissions and connections.",
         );
@@ -166,7 +181,25 @@ export default function StopMotionApp() {
       active = false;
       if (currentStream) currentStream.getTracks().forEach((t) => t.stop());
     };
-  }, [activeCamera]);
+  }, [activeCamera, cameraEpoch]);
+
+  // Reconnect camera after resume/unlock
+  useEffect(() => {
+    const kick = () => {
+      setStreamReady(false);
+      setCameraReconnect(true);
+      setCameraEpoch((e) => e + 1);
+    };
+    const onVis = () => {
+      if (document.visibilityState === "visible") kick();
+    };
+    window.addEventListener("focus", kick);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.removeEventListener("focus", kick);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, []);
 
   // --- Capture & upload ---
   const handleCapture = useCallback(async () => {
@@ -507,12 +540,24 @@ export default function StopMotionApp() {
   // --- Button forwarder status (dev helper) ---
   useEffect(() => {
     let stopped = false;
+    let reconnectTimer;
     const check = async () => {
       try {
         const status = await getForwarderStatus();
-        if (!stopped) setSerialMissing(!(status?.alive && status?.connected));
+        const connected = Boolean(status?.alive && status?.connected);
+        if (!stopped) setSerialMissing(!connected);
+        if (lastForwarderConnected.current === false && connected && !stopped) {
+          setButtonsReconnected(true);
+          if (reconnectTimer) clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(
+            () => setButtonsReconnected(false),
+            5000,
+          );
+        }
+        lastForwarderConnected.current = connected;
       } catch {
         if (!stopped) setSerialMissing(true);
+        lastForwarderConnected.current = false;
       }
     };
     check();
@@ -520,6 +565,7 @@ export default function StopMotionApp() {
     return () => {
       stopped = true;
       clearInterval(id);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
     };
   }, []);
 
@@ -771,18 +817,26 @@ export default function StopMotionApp() {
       {!isPlaying && (
         <>
           <div className="absolute top-4 left-4 bg-black/60 px-3 py-1 rounded-xl text-sm backdrop-blur">
-            {streamReady ? "Live" : "Starting Camera..."}
+            {streamReady
+              ? "Live"
+              : cameraReconnect
+                ? "Reconnecting camera..."
+                : "Starting Camera..."}
           </div>
           {serialMissing && (
             <div className="absolute top-4 left-32 bg-amber-500/80 text-black px-3 py-1 rounded-xl text-sm shadow backdrop-blur">
-              Serial disconnected
+              Buttons disconnected — reconnecting...
+            </div>
+          )}
+          {!serialMissing && buttonsReconnected && (
+            <div className="absolute top-4 left-32 bg-emerald-400/80 text-black px-3 py-1 rounded-xl text-sm shadow backdrop-blur">
+              Buttons reconnected
             </div>
           )}
           {thumbnails.length === 0 && (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="bg-black/60 text-white text-center px-6 py-4 rounded-2xl text-2xl md:text-3xl font-semibold shadow-lg backdrop-blur">
-                Press <span className="font-bold">snap</span>{" "}
-                to get started!
+              <div className="bg-teal-500/85 text-black text-center px-6 py-4 rounded-2xl text-2xl md:text-3xl font-semibold shadow-lg backdrop-blur">
+                Press <span className="font-bold">Snap</span> to get started!
               </div>
             </div>
           )}
