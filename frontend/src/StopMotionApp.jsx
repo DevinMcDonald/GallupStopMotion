@@ -24,6 +24,7 @@ export default function StopMotionApp() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const playbackRef = useRef(null);
+  const sfxRef = useRef({ sounds: {}, buffers: {}, ctx: null, gain: null });
 
   const [streamReady, setStreamReady] = useState(false);
   const [thumbnails, setThumbnails] = useState([]); // { id, url }
@@ -56,6 +57,86 @@ export default function StopMotionApp() {
     setNotice((n) =>
       n?.startsWith("Inactivity") || n?.startsWith("Approaching") ? "" : n,
     );
+  }, []);
+
+  const loadSfx = useCallback(async () => {
+    try {
+      const res = await fetch("/sounds/sfx.json", { cache: "no-store" });
+      if (!res.ok) return;
+      const config = await res.json();
+      const basePath =
+        typeof config?.basePath === "string" ? config.basePath : "/sounds/";
+      const basePrefix = basePath.endsWith("/") ? basePath : `${basePath}/`;
+      const volume =
+        typeof config?.volume === "number" ? config.volume : 1;
+      const sounds = {};
+      const buffers = {};
+      const AudioCtor = window.AudioContext || window.webkitAudioContext;
+      let ctx = sfxRef.current.ctx;
+      let gain = sfxRef.current.gain;
+      if (!ctx && AudioCtor) {
+        ctx = new AudioCtor();
+        gain = ctx.createGain();
+        gain.connect(ctx.destination);
+      }
+      if (gain) {
+        gain.gain.value = Math.max(0, Math.min(1, volume));
+      }
+      const loadTasks = [];
+      for (const [key, value] of Object.entries(config)) {
+        if (key === "basePath" || key === "volume") continue;
+        if (typeof value !== "string") continue;
+        const url =
+          value.startsWith("http") || value.startsWith("/")
+            ? value
+            : `${basePrefix}${value}`;
+        const audio = new Audio(url);
+        audio.preload = "auto";
+        audio.volume = Math.max(0, Math.min(1, volume));
+        sounds[key] = audio;
+        if (ctx) {
+          loadTasks.push(
+            fetch(url)
+              .then((resp) => (resp.ok ? resp.arrayBuffer() : null))
+              .then((buf) => (buf ? ctx.decodeAudioData(buf) : null))
+              .then((decoded) => {
+                if (decoded) buffers[key] = decoded;
+              })
+              .catch(() => {}),
+          );
+        }
+      }
+      if (loadTasks.length > 0) {
+        await Promise.all(loadTasks);
+      }
+      sfxRef.current = { sounds, buffers, ctx, gain };
+    } catch {
+      // ignore missing/parse errors
+    }
+  }, []);
+
+  const playSfx = useCallback((name) => {
+    const { sounds, buffers, ctx, gain } = sfxRef.current || {};
+    const buffer = buffers?.[name];
+    if (ctx && buffer) {
+      if (ctx.state === "suspended") {
+        ctx.resume().catch(() => {});
+      }
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(gain || ctx.destination);
+      source.start(0);
+      return;
+    }
+    const audio = sounds?.[name];
+    if (!audio) return;
+    try {
+      audio.currentTime = 0;
+      const maybePromise = audio.play();
+      if (maybePromise?.catch) {
+        maybePromise.catch(() => {});
+      }
+    } catch {}
   }, []);
 
   // --- Fresh session on load ---
@@ -103,6 +184,10 @@ export default function StopMotionApp() {
       cancelled = true;
     };
   }, [activeCamera]);
+
+  useEffect(() => {
+    loadSfx();
+  }, [loadSfx]);
 
   // --- Webcam background ---
   useEffect(() => {
@@ -218,6 +303,7 @@ export default function StopMotionApp() {
       setThumbnails((prev) =>
         [{ id: tempId, url: localUrl }, ...prev].slice(0, 30),
       );
+      playSfx("snap");
 
       const data = await uploadFrame(blob); // { id, thumbnail_url? }
       if (data?.thumbnail_url) {
@@ -241,7 +327,14 @@ export default function StopMotionApp() {
     } finally {
       setIsCapturing(false);
     }
-  }, [isCapturing, frameCount, zoomConfig, shareOverlay, pendingResetConfirm]);
+  }, [
+    isCapturing,
+    frameCount,
+    zoomConfig,
+    shareOverlay,
+    pendingResetConfirm,
+    playSfx,
+  ]);
 
   // --- Undo last frame ---
   const handleUndo = useCallback(async () => {
@@ -250,6 +343,7 @@ export default function StopMotionApp() {
     if (pendingResetConfirm) setPendingResetConfirm(false);
     setNotice("");
     setThumbnails((prev) => prev.slice(1));
+    playSfx("undo");
     try {
       const res = await deleteLastFrame();
       if (res && typeof res.count === "number") {
@@ -260,7 +354,7 @@ export default function StopMotionApp() {
     } catch (err) {
       console.warn("undo failed", err);
     }
-  }, [shareOverlay, pendingResetConfirm]);
+  }, [shareOverlay, pendingResetConfirm, playSfx]);
 
   // --- Reset all ---
   const handleResetAll = useCallback(async () => {
@@ -276,6 +370,7 @@ export default function StopMotionApp() {
       setPendingResetConfirm(true);
       setNotice("Press done again to upload and start a new session.");
       setError("");
+      playSfx("almost_done");
       return;
     }
 
@@ -286,6 +381,7 @@ export default function StopMotionApp() {
     setAutoplayBlocked(false);
     setThumbnails([]);
     setFrameCount(0);
+    playSfx("done");
     try {
       const resp = await finalizeShare();
       const shareUrl = resp?.share?.url || resp?.url;
@@ -316,7 +412,7 @@ export default function StopMotionApp() {
     } catch (e) {
       setError(e.message || "Reset failed");
     }
-  }, [pendingResetConfirm, shareOverlay]);
+  }, [pendingResetConfirm, shareOverlay, playSfx]);
 
   // --- Build & play (no fullscreen API) ---
   const handlePlay = useCallback(async () => {
@@ -342,6 +438,7 @@ export default function StopMotionApp() {
       const abs = resolveUrl(video_url) + `?t=${Date.now()}`;
       setPlaybackSrc(abs);
       setIsPlaying(true);
+      playSfx("play");
 
       for (let i = 0; i < 60 && !playbackRef.current; i++) {
         // eslint-disable-next-line no-await-in-loop
@@ -379,7 +476,7 @@ export default function StopMotionApp() {
     } finally {
       setLoadingPlayback(false);
     }
-  }, [loadingPlayback]);
+  }, [loadingPlayback, playSfx]);
 
   // --- WebSocket subscription to backend button events ---
   useEffect(() => {

@@ -1,0 +1,9 @@
+{
+  "basePath": "/sounds/",
+  "volume": 0.9,
+  "snap": "snap.mp3",
+  "undo": "undo.mp3",
+  "play": "play.mp3",
+  "done": "done.mp3",
+  "almost_done": "almost_done.mp3"
+}
