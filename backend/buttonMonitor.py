@@ -100,10 +100,9 @@ class SerialDeviceMonitor(InputMonitor):
     @override
     def commands(self):
         for button in self._serialInputs():
-            assert button in self.BUTTONS, f"{button} not in buttons"
-            if button not in self.BUTTONS:
+            if not button or button not in self.BUTTONS:
                 print(f"Receieved invalid button from serial input: {button}")
-                return
+                continue
             yield button
 
     @override

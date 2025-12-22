@@ -12,8 +12,8 @@ from buttonMonitor import (
     resolve_device,
 )  # your serial reader
 
-BUTTON_MIN_INTERVAL = float(os.getenv("BUTTON_MIN_INTERVAL", "1.0"))
-last_sent: float | None = None
+BUTTON_MIN_INTERVAL = float(os.getenv("BUTTON_MIN_INTERVAL", "0.6"))
+last_sent_by_type: dict[str, float] = {}
 
 BACKEND = os.getenv("BACKEND", "http://localhost:8000")
 TOKEN = os.getenv("TOKEN", "super-secret-token")  # keep in sync with backend
@@ -43,19 +43,18 @@ EVENT_MAP = {
 
 
 def send(evt_raw: str) -> None:
-    global last_sent
-
-    now = time.time()
-    if last_sent is not None and (now - last_sent) < BUTTON_MIN_INTERVAL:
-        print(
-            f"[forwarder] rate-limited ({BUTTON_MIN_INTERVAL}s) skipping {evt_raw}",
-            file=sys.stderr,
-        )
-        return
 
     etype = EVENT_MAP.get(evt_raw, evt_raw).lower()
     if etype not in {"capture", "play", "reset", "undo", "done"}:
         print(f"[forwarder] ignoring unknown event: {evt_raw!r} -> {etype!r}")
+        return
+    now = time.time()
+    last_sent = last_sent_by_type.get(etype)
+    if last_sent is not None and (now - last_sent) < BUTTON_MIN_INTERVAL:
+        print(
+            f"[forwarder] rate-limited ({BUTTON_MIN_INTERVAL}s) skipping {etype}",
+            file=sys.stderr,
+        )
         return
     try:
         r = requests.post(
@@ -68,7 +67,7 @@ def send(evt_raw: str) -> None:
             print(f"[forwarder] backend rejected {etype}: {r.status_code} {r.text}")
         else:
             print(f"[forwarder] sent {etype}: {r.status_code}")
-            last_sent = now
+            last_sent_by_type[etype] = now
     except Exception as e:
         print("[forwarder] send failed:", e, file=sys.stderr)
 
