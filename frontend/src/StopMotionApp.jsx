@@ -432,6 +432,15 @@ export default function StopMotionApp() {
           const trimmed = raw.trim().toLowerCase();
           const record = (t) => setWsInfo((p) => ({ ...p, last: t }));
 
+          if (shareOverlay) {
+            setShareOverlay(null);
+            setPendingResetConfirm(false);
+            setError("");
+            setNotice("");
+            record("dismiss-share");
+            return;
+          }
+
           if (trimmed === "capture") {
             record("capture");
             return void handleCapture();
@@ -609,6 +618,7 @@ export default function StopMotionApp() {
         setShareOverlay(null);
         setPendingResetConfirm(false);
         setError("");
+        setNotice("");
         return;
       }
       if (isUploading) return;
@@ -768,16 +778,19 @@ export default function StopMotionApp() {
               Serial disconnected
             </div>
           )}
+          {thumbnails.length === 0 && (
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <div className="bg-black/60 text-white text-center px-6 py-4 rounded-2xl text-2xl md:text-3xl font-semibold shadow-lg backdrop-blur">
+                Press <span className="font-bold">snap</span>{" "}
+                to get started!
+              </div>
+            </div>
+          )}
 
           {/* Film roll in lower third */}
           <div className="absolute bottom-0 w-full bg-gradient-to-t from-black/70 to-transparent p-4 flex items-end">
             <div className="flex overflow-x-auto gap-3 flex-1">
-              {thumbnails.length === 0 && (
-                <div className="text-white/80 text-sm">
-                  No frames yet — press{" "}
-                  <span className="font-semibold">Snap</span> to get started
-                </div>
-              )}
+              {thumbnails.length === 0 && <div className="h-28 w-full" />}
               {thumbnails.map((t) => (
                 <img
                   key={t.id}
