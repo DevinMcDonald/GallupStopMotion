@@ -57,6 +57,13 @@ export default function StopMotionApp() {
   const cameraNeedsReload = useRef(false);
   const cameraRetryCount = useRef(0);
 
+  const hardReload = useCallback(() => {
+    const base = `${window.location.origin}${window.location.pathname}`;
+    const params = new URLSearchParams(window.location.search);
+    params.set("reload", String(Date.now()));
+    window.location.replace(`${base}?${params.toString()}`);
+  }, []);
+
   // Inactivity timings (tunable; shortened defaults for testing)
   const WARN_MS = 120_000;
   const TIMEOUT_MS = 180_000;
@@ -242,6 +249,10 @@ export default function StopMotionApp() {
         const camDevices = devices.filter((d) => d.kind === "videoinput");
         setCameras(camDevices);
         if (camDevices.length === 0) throw new Error("No cameras found.");
+        if (cameraNeedsReload.current) {
+          hardReload();
+          return;
+        }
         const selectedId =
           camDevices.find((c) => c.deviceId === activeCamera)?.deviceId ||
           camDevices[camDevices.length - 1].deviceId;
@@ -321,7 +332,13 @@ export default function StopMotionApp() {
       active = false;
       if (currentStream) currentStream.getTracks().forEach((t) => t.stop());
     };
-  }, [activeCamera, cameraEpoch, scheduleCameraRetry, resetCameraVideo]);
+  }, [
+    activeCamera,
+    cameraEpoch,
+    scheduleCameraRetry,
+    resetCameraVideo,
+    hardReload,
+  ]);
 
   // Reconnect camera after resume/unlock
   useEffect(() => {
@@ -399,20 +416,26 @@ export default function StopMotionApp() {
 
       const tempId = `local-${Date.now()}`;
       const localUrl = URL.createObjectURL(blob);
-      setThumbnails((prev) =>
-        [{ id: tempId, url: localUrl }, ...prev].slice(0, 30),
-      );
+      setThumbnails((prev) => {
+        const next = [...prev, { id: tempId, url: localUrl }];
+        return next.slice(-30);
+      });
       playSfx("snap");
 
       const data = await uploadFrame(blob); // { id, thumbnail_url? }
       if (data?.thumbnail_url) {
         const resolved = resolveUrl(data.thumbnail_url);
-        setThumbnails((prev) =>
-          [
-            { id: data.id || tempId, url: resolved },
-            ...prev.filter((t) => t.id !== tempId),
-          ].slice(0, 30),
-        );
+        setThumbnails((prev) => {
+          const next = prev.map((t) =>
+            t.id === tempId
+              ? { id: data.id || tempId, url: resolved }
+              : t,
+          );
+          if (!next.find((t) => t.id === data.id || t.id === tempId)) {
+            next.push({ id: data.id || tempId, url: resolved });
+          }
+          return next.slice(-30);
+        });
         const maxFrames = zoomConfig.maxFrames || DEFAULT_ZOOM_CONFIG.maxFrames;
         const nextCount =
           typeof data?.count === "number" ? data.count : frameCount + 1;
@@ -442,7 +465,7 @@ export default function StopMotionApp() {
     bumpActivity();
     if (pendingResetConfirm) setPendingResetConfirm(false);
     setNotice("");
-    setThumbnails((prev) => prev.slice(1));
+    setThumbnails((prev) => prev.slice(0, -1));
     playSfx("undo");
     try {
       const res = await deleteLastFrame();
